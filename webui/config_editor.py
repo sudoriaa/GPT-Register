@@ -66,6 +66,14 @@ EDITABLE_FIELDS = [
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册方式",
         "label": "注册驱动", "help": "默认推荐 roxy；protocol=纯协议，容易封号不建议；roxy=RoxyBrowser；cloak=CloakBrowser；browser_use=Browser Use Cloud+Playwright；skyvern=Skyvern Browser Sessions+Playwright",
     },
+    {
+        "key": "REGISTER_SET_PASSWORD", "file": "register.py", "type": "bool", "group": "注册方式",
+        "label": "注册时设置密码", "help": "True=在 OTP 页点'使用密码继续'切到 /create-account/password 直接设密码；False=纯 OTP 注册（无密码）",
+    },
+    {
+        "key": "REGISTER_DISABLE_OTP_FALLBACK", "file": "register.py", "type": "bool", "group": "注册方式",
+        "label": "关闭 OTP 注册兜底", "help": "开启后，走到密码页但无法设密码（登录密码页/找不到'使用密码继续'）时不再回退 OTP 注册，而是直接报错结束该任务（只要带密码的新号）",
+    },
 
     # ---- FAST 模式（注册提速） ----
     {

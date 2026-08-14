@@ -1936,6 +1936,19 @@ def _register_set_password_enabled() -> bool:
         return True
 
 
+def _register_otp_fallback_enabled() -> bool:
+    """是否允许 OTP（一次性验证码）注册兜底。
+
+    设 REGISTER_DISABLE_OTP_FALLBACK=True 后，走到密码页但无法设置密码时
+    不再回退 OTP 注册，而是直接报错结束任务（只要带密码的新号）。
+    """
+    try:
+        from config import register as _register_cfg
+        return not bool(getattr(_register_cfg, 'REGISTER_DISABLE_OTP_FALLBACK', False))
+    except Exception:
+        return True
+
+
 def _password_page_state(driver) -> dict:
     try:
         return driver.execute_script(r"""
@@ -2174,6 +2187,11 @@ def _fill_password_page_if_present(driver, email: str, timeout: int = 25) -> str
             continue
         passwordless = None
         if is_login_password or not _register_set_password_enabled():
+            if not _register_otp_fallback_enabled():
+                raise RuntimeError(
+                    f"已进入密码页但无法设置密码（识别为登录密码页或未开启设密码），"
+                    f"且已关闭 OTP 注册兜底（REGISTER_DISABLE_OTP_FALLBACK=1）：email={email} state={last}"
+                )
             # 登录密码页没有可填写的注册密码；无论配置如何，都先尝试页面提供的
             # 一次性验证码入口。找不到入口时必须停止，不能把密码页交给 OTP 阶段。
             passwordless = _click_passwordless_signup_if_present(driver)
@@ -3587,7 +3605,17 @@ def run_roxy_registration(
                 if _register_set_password_enabled():
                     if _click_continue_with_password(driver, timeout=20):
                         return _fill_password_page_if_present(driver, email, timeout=30), None
+                    if not _register_otp_fallback_enabled():
+                        raise RuntimeError(
+                            f"邮箱提交后进入 OTP 页但未找到'使用密码继续'入口，"
+                            f"且已关闭 OTP 注册兜底（REGISTER_DISABLE_OTP_FALLBACK=1）：email={email}"
+                        )
                     logger.info("%s[密码] 未找到'使用密码继续'入口，走纯 OTP 注册", _log_prefix(driver))
+                elif not _register_otp_fallback_enabled():
+                    raise RuntimeError(
+                        f"已关闭 OTP 注册兜底（REGISTER_DISABLE_OTP_FALLBACK=1）但 "
+                        f"REGISTER_SET_PASSWORD=False，注册无法设置密码：email={email}"
+                    )
                 return None, "otp"
             return _fill_password_page_if_present(driver, email, timeout=25), None
 

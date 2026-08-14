@@ -27,6 +27,12 @@ BACKFILL_SET_PASSWORD = True
 # "至少 12 位、含字母、符号、数字"，因此必须含符号；符号集排除 - 以免与发货格式 ---- 分隔符冲突）。
 REGISTER_SET_PASSWORD = True
 
+# 关闭 OTP 注册兜底：默认 False（允许兜底）。
+# 开启（True）后，注册走到密码页但无法设置密码（识别为登录密码页 / 找不到"使用密码继续"入口）时，
+# **不再回退到 OTP（一次性验证码）注册**，而是直接报错结束该任务（按失败处理，换下一个号）。
+# 适合只要"带密码的新号"、不要无密码 OTP 号的使用场景。
+REGISTER_DISABLE_OTP_FALLBACK = False
+
 # 批量注册时相邻 worker 的启动间隔（秒）。并发模式按 0、2、4、6... 秒依次启动，
 # 避免同一批窗口同时打开。CLI 的 --delay 走另一条提交错峰路径；这里控制 WebUI
 # 批量入口（submit_registration）。
@@ -43,6 +49,7 @@ apply_env_overrides(globals(), {
     'REGISTER_NAME': 'str',
     'BACKFILL_SET_PASSWORD': 'bool',
     'REGISTER_SET_PASSWORD': 'bool',
+    'REGISTER_DISABLE_OTP_FALLBACK': 'bool',
     'BATCH_STAGGER': 'float',
     'RUN_MAX_MINUTES': 'float',
 })

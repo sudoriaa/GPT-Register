@@ -1,0 +1,23 @@
+# 通用 API 取码邮箱池（EMAIL_SOURCE 含 generic_api 时自动导入）
+# 每行格式：邮箱----取码地址
+#
+# 支持 iCloud 隐藏邮箱 HTML 中转取件（如 mail.ai1998.xyz / icloud-api.top）：
+#   每行格式：xxx@icloud.com----中转链接
+#   取码地址形如 https://mail.ai1998.xyz/messages/TOKEN/xxx%40icloud.com
+#   或 https://icloud-api.top/messages/TOKEN/xxx%40icloud.com
+#   运行时自动附加 all=1&n=20 拉取全部邮件，两种卡片版式（mail-card / card）都识别，
+#   自动过滤非 OpenAI 邮件，并从正文提取 6 位验证码。
+#
+# 支持微信邮箱取件服务（sms.linlinflow 类 /latest?email=...&auth_code=...）：
+#   取码地址形如 https://sms.linlinflow.ccwu.cc/latest?email=xxx%40icloud.com&auth_code=xxx
+#   运行时自动改走 /mail-api/{auth_code}/{email}?folder=inbox 的 JSON 接口取码。
+#
+# 支持 xbovo iCloud Hide My Email API（icloud.xbovo.online）：
+#   每行格式：xxx@icloud.com----alias_xxx（第二段是 API Key，不是 URL）
+#   运行时自动调 GET https://icloud.xbovo.online/api/v1/code?key=alias_xxx 取码。
+#
+# 示例：
+# polymer_lip.8o@icloud.com----https://mail.ai1998.xyz/messages/TOKEN/polymer_lip.8o%40icloud.com
+# wariest-grimier.33@icloud.com----https://icloud-api.top/messages/TOKEN/wariest-grimier.33%40icloud.com
+# matte.vim70@icloud.com----https://sms.linlinflow.ccwu.cc/latest?email=matte.vim70%40icloud.com&auth_code=uza3NoJ2mjoJSojg
+# foo.bar@icloud.com----alias_xxxxxxxxxxxxxxx
