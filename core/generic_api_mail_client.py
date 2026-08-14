@@ -364,6 +364,10 @@ def _parse_mail_api_url(code_url: str) -> tuple[str, str, str] | None:
         return None
     if not parsed.hostname:
         return None
+    # youyangai 取件页也是 ?email=..&key=.. 形态，但路径是 /pickup，走 /api/messages；
+    # 必须排除，避免被本解析器（/mail-api/{key}/{email}）误抢。
+    if "pickup" in (parsed.path or "").lower():
+        return None
     try:
         from urllib.parse import parse_qsl
         q = {}
@@ -492,16 +496,16 @@ def _is_flysms_host(host: str) -> bool:
 
 def _parse_youyangai_url(code_url: str) -> tuple[str, str, str] | None:
     """
-    识别 youyangai iCloud 取件地址：https://<host>/pickup#email=..&key=..
-    （参数在 URL fragment 里，直接 GET /pickup 只拿到 JS 渲染页，取不到验证码）。
+    识别 youyangai iCloud 取件地址：https://<host>/pickup
+    兼容两种参数位置（真实取码 API 都是 GET {origin}/api/messages?email&key）：
+      · fragment：#email=..&key=..（ic.youyangai.top 页面 JS 用 #）
+      · query：  ?email=..&key=..（部分站点直接放 query）
 
-    真实取码 API：
-        GET {origin}/api/messages?email=<email>&key=<key>[&force=1]
-        GET {origin}/api/message/<id>?email=<email>&key=<key>
+    路径须含 "pickup" 以与 mail-api（/latest?email&auth_code）区分。
     返回 (origin, email, key)；不是该类型返回 None。
     """
     text = str(code_url or "").strip()
-    if "#" not in text:
+    if "#" not in text and "?" not in text:
         return None
     try:
         from urllib.parse import parse_qsl, unquote as _unq, urlparse, urlunparse
@@ -510,13 +514,17 @@ def _parse_youyangai_url(code_url: str) -> tuple[str, str, str] | None:
             return None
         if _is_flysms_host(parsed.hostname):
             return None
-        if not parsed.fragment:
+        if "pickup" not in (parsed.path or "").lower():
             return None
-        q = {}
-        for k, v in parse_qsl(parsed.fragment):
-            q.setdefault(k.lower(), v)
-        email = q.get("email") or q.get("mail") or ""
-        key = q.get("key") or q.get("auth_code") or q.get("code") or ""
+        params: dict[str, str] = {}
+        if parsed.fragment:
+            for k, v in parse_qsl(parsed.fragment):
+                params.setdefault(k.lower(), v)
+        if parsed.query:
+            for k, v in parse_qsl(parsed.query):
+                params.setdefault(k.lower(), v)
+        email = params.get("email") or params.get("mail") or ""
+        key = params.get("key") or params.get("auth_code") or params.get("code") or ""
         if not email or not key:
             return None
         origin = urlunparse((parsed.scheme or "https", parsed.netloc, "", "", "", ""))
