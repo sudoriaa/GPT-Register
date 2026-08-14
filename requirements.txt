@@ -1,0 +1,13 @@
+curl_cffi>=0.15.0
+pyotp>=2.9.0
+flask>=3.0.0
+requests[socks]>=2.31.0
+pycryptodome>=3.23.0
+selenium>=4.20.0
+
+cryptography>=41
+httpx>=0.26
+# PyPI 0.5.6 predates the upstream nested-frame/Keyboard.press humanize fixes.
+cloakbrowser[geoip] @ git+https://github.com/CloakHQ/CloakBrowser.git@ec8802672321bd4b0d99f83ec996318962e13d8c
+playwright>=1.49.0
+python-dotenv>=1.0.0
