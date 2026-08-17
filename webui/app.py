@@ -58,6 +58,13 @@ def _pool_source_arg(default: str = "outlook") -> str:
     if not src and request.method == "POST":
         data = request.get_json(silent=True) or {}
         src = (data.get("source") or data.get("type") or "").strip()
+    src = src.lower()
+    src = {
+        "gmx": "mailcom",
+        "gmx.com": "mailcom",
+        "caramail": "mailcom",
+        "caramail.com": "mailcom",
+    }.get(src, src)
     return src if src in ("all", "outlook", "generic_api", "cloudflare_domain", "imap_pass", "mailcom") else default
 
 
@@ -276,7 +283,7 @@ def _material_line_for_account(row: dict) -> str:
         pool_row = db.get_generic_api_email_by_email(email)
         if pool_row and pool_row.get("code_url"):
             return f"{email}----{pool_row.get('code_url')}"
-        # mail.com 协议邮箱池
+        # mail.com / GMX / Caramail 共用邮箱池
         mailcom_row = db.get_mailcom_email_by_email(email)
         if mailcom_row:
             return f"{email}----{mailcom_row.get('password') or ''}"
@@ -2064,12 +2071,18 @@ def create_app(auth_code: str | None = None) -> Flask:
         粘贴文本导入邮箱素材。
         Outlook：email----password----clientId----refreshToken
         通用 API：email----code_url
-        mail.com：email----password
+        mail.com / GMX / Caramail：email----password
         带 token 的通用 API：email---token---code_url（token 丢弃）
         分隔符兼容 ---- 与 ====。
         """
         data = request.get_json(silent=True) or {}
-        source = (data.get("source") or data.get("type") or "").strip()
+        source = (data.get("source") or data.get("type") or "").strip().lower()
+        source = {
+            "gmx": "mailcom",
+            "gmx.com": "mailcom",
+            "caramail": "mailcom",
+            "caramail.com": "mailcom",
+        }.get(source, source)
         text = data.get("text") or ""
         imap_host = (data.get("imap_host") or data.get("provider_host") or "").strip()
         lines = [
@@ -2078,7 +2091,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             if line.strip() and not line.strip().startswith("#")
         ]
         tokenized_lines = [_parse_tokenized_generic_api_line(line) for line in lines]
-        # 保留 Outlook 入口对旧三段格式的自动识别；显式选择 mail.com/IMAP/xbovo
+        # 保留 Outlook 入口对旧三段格式的自动识别；显式选择 mail.com/GMX/IMAP/xbovo
         # 时以用户选定来源为准，避免密码中带 ``---https://`` 被误判为通用 API。
         if source in ("", "outlook", "generic_api") and lines and all(
             record is not None for record in tokenized_lines
@@ -2086,7 +2099,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             source = "generic_api"
         # xbovo（iCloud Hide My Email）与通用 API 同池：邮箱----alias_xxx（第二段是 API Key）
         if source not in ("outlook", "generic_api", "xbovo", "imap_pass", "mailcom"):
-            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook / 通用 API / xbovo / IMAP / mail.com"}), 400
+            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook / 通用 API / xbovo / IMAP / mail.com/GMX"}), 400
         as_registered = bool(data.get("as_registered", False))
         records = []
         converted = 0
@@ -2149,7 +2162,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "generic_api": "邮箱----取码地址，或 邮箱---token---取码地址",
                 "xbovo": "2 段：邮箱----alias_xxx（iCloud API Key）",
                 "imap_pass": "2 段：邮箱----密码（标准 IMAP 直连取信）",
-                "mailcom": "2 段：邮箱地址----登录密码",
+                "mailcom": "2 段：mail.com/GMX/Caramail 邮箱地址----登录密码",
             }.get(source, "4 段：email----password----clientId----refreshToken")
             return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}，---- 或 ==== 分隔）"}), 400
         if as_registered:
@@ -3038,7 +3051,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             pool = db.mailcom_email_pool_summary()
             warning = ""
             if pool.get("available", 0) < count:
-                warning = f"mail.com 邮箱池仅 {pool.get('available', 0)} 个可用，少于任务数 {count}，不足的会失败"
+                warning = f"mail.com / GMX 邮箱池仅 {pool.get('available', 0)} 个可用，少于任务数 {count}，不足的会失败"
         elif len(sources) > 1:
             available = 0
             if "outlook" in sources:

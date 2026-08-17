@@ -293,6 +293,11 @@ def change_account_password(
     Returns:
         (account, new_password)
     """
+    from core.gmx_imap_client import is_gmx_email
+
+    if is_gmx_email(account.username):
+        raise MailComError("GMX/Caramail 账号不适用 account.mail.com 改密流程")
+
     generated = not bool((new_password or "").strip())
     new_password = (new_password or "").strip() or generate_mailcom_password(12)
     old_password = account.password
@@ -352,6 +357,11 @@ def change_mailcom_password_for_email(
     Returns:
         新密码
     """
+    from core.gmx_imap_client import is_gmx_email
+
+    if is_gmx_email(email):
+        raise MailComError("GMX/Caramail 账号不适用 account.mail.com 改密流程")
+
     generated = not bool((new_password or "").strip())
     new_password = (new_password or "").strip() or generate_mailcom_password(12)
 
@@ -467,6 +477,12 @@ def maybe_change_mailcom_password_before_register(
     except Exception:
         source = ""
     if source != "mailcom":
+        return None
+
+    from core.gmx_imap_client import is_gmx_email
+
+    if is_gmx_email(email):
+        logger.info("[GMX IMAP] 注册前跳过 mail.com 网页改密流程 email=%s", email)
         return None
 
     logger.info(

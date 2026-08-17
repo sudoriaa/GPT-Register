@@ -288,7 +288,10 @@ async function listMessages(input) {
 
   const recent = incoming.mail
     .map((message) => ({ message, id: mailId(message), ts: timestampSeconds(message?.mailHeader?.date) }))
-    .filter(({ id, ts }) => id && (ts === null || ts >= afterTs))
+    // listIncoming() already applies mail.internaldate.after on the server.
+    // A sender-controlled Date header can be stale or malformed, so it must
+    // not discard a message which the server received after the cutoff.
+    .filter(({ id }) => id)
     .slice(0, amount);
 
   let previews = [];
@@ -327,7 +330,10 @@ async function listMessages(input) {
       subject: String(header.subject ?? ""),
       text: preview,
       html,
-      ts: entry.ts,
+      // Keep a trustworthy header timestamp for ranking.  When it predates
+      // the server-side cutoff, expose null so Python accepts the message and
+      // falls back to list order instead of treating it as stale.
+      ts: entry.ts === null || entry.ts >= afterTs ? entry.ts : null,
       folder_type: String(entry.message?.sourceFolder?.folderType ?? ""),
     });
   }

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""mail.com 邮箱池客户端，使用 ``maildotcom-sdk`` mobile API 取信。
+"""mail.com / GMX / Caramail 共用邮箱池客户端。
 
-Python 通过 stdin/stdout JSON bridge 调用 Node SDK；邮箱密码不会进入进程命令行。
-SDK token session 缓存在 ``run/mailcom_sessions``，轮询时可复用登录态。
+mail.com 通过 stdin/stdout JSON bridge 调用 Node SDK；GMX/Caramail 地址按域名
+自动切换官方 IMAP SSL。邮箱密码不会进入进程命令行，SDK token session 缓存在
+``run/mailcom_sessions``，轮询时可复用登录态。
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ _DEFAULT_SESSION_DIR = _PROJECT_ROOT / "run" / "mailcom_sessions"
 
 
 class MailComError(RuntimeError):
-    """mail.com 登录、SDK bridge 或取码失败。"""
+    """mail.com/GMX 登录、取信 bridge 或验证码提取失败。"""
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,32 @@ def _proxy_route_login_failed(exc: BaseException) -> bool:
 
 
 def _list_messages(email: str, password: str, after_ts: float) -> list[dict]:
+    # GMX/Caramail 与 mail.com 同属一套账号体系，但 OAuth 主机不同。继续复用
+    # mailcom 邮箱池，只在取信层按域名切到 GMX 官方 IMAP，避免无效 OAuth 重试。
+    from core import gmx_imap_client
+
+    if gmx_imap_client.is_gmx_email(email):
+        try:
+            return gmx_imap_client.list_messages(
+                email,
+                password,
+                after_ts,
+                message_limit=_message_limit(),
+            )
+        except gmx_imap_client.GmxImapError as exc:
+            detail = str(exc)
+            if str(password):
+                detail = detail.replace(str(password), "***")
+            raise MailComError(detail) from exc
+        except Exception as exc:
+            detail = str(exc)
+            if str(password):
+                detail = detail.replace(str(password), "***")
+            detail = detail[:240]
+            raise MailComError(
+                f"GMX IMAP 取信失败: {type(exc).__name__}: {detail}"
+            ) from exc
+
     with _email_lock(email):
         key = _cache_key(email)
         configured_proxy = _mailcom_proxy()
@@ -232,13 +259,13 @@ def pick_account() -> MailComAccount:
 
     row = db.claim_next_mailcom_email()
     if row is None:
-        raise MailComError("mail.com 邮箱池没有可用邮箱，请先导入 邮箱地址----登录密码")
+        raise MailComError("mail.com / GMX 邮箱池没有可用邮箱，请先导入 邮箱地址----登录密码")
     account = MailComAccount(
         email=str(row.get("email") or "").strip(),
         password=str(row.get("password") or ""),
     )
     if not account.email or not account.password:
-        raise MailComError("mail.com 邮箱池记录缺少邮箱或登录密码")
+        raise MailComError("mail.com / GMX 邮箱池记录缺少邮箱或登录密码")
     return _remember(account)
 
 
@@ -250,6 +277,12 @@ def release_account(email: str, status: str = "available", note: str | None = No
         _CONTEXT_CACHE.pop(_cache_key(email), None)
         _CONTEXT_CACHE.pop(str(email or "").strip(), None)
         _DIRECT_ROUTE_EMAILS.discard(_cache_key(email))
+        try:
+            from core import gmx_imap_client
+
+            gmx_imap_client.clear_host_cache(email)
+        except Exception:
+            pass
 
 
 def _message_timestamp(item: dict) -> float | None:
@@ -272,13 +305,15 @@ def _fetch_latest_value(
     value_label: str,
 ) -> str:
     from config import email as _email_cfg
+    from core.gmx_imap_client import is_gmx_email
 
     target = str(email or "").strip()
+    provider_label = "GMX/Caramail" if is_gmx_email(target) else "mail.com"
     if not target:
-        raise MailComError(f"mail.com 取{value_label}缺少邮箱地址")
+        raise MailComError(f"{provider_label} 取{value_label}缺少邮箱地址")
     account = get_account_context(target)
     if account is None or not account.password:
-        raise MailComError(f"mail.com 邮箱上下文缺失: {target}（请先导入 邮箱地址----登录密码）")
+        raise MailComError(f"{provider_label} 邮箱上下文缺失: {target}（请先导入 邮箱地址----登录密码）")
 
     wait_seconds = int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT)
     requested_interval = int(
@@ -309,7 +344,8 @@ def _fetch_latest_value(
     last_error = "收件箱为空或尚未出现新的 OpenAI 邮件"
     first_poll = True
 
-    logger.info("[MailCom] 开始轮询 %s，最长 %ss", target, wait_seconds)
+    log_tag = "GMX IMAP" if is_gmx_email(target) else "MailCom"
+    logger.info("[%s] 开始轮询 %s，最长 %ss", log_tag, target, wait_seconds)
     while first_poll or time.monotonic() < deadline:
         first_poll = False
         try:
@@ -332,10 +368,10 @@ def _fetch_latest_value(
                     best_rank = rank
                     best_message_id = message_id
                     settle_until = time.monotonic() + settle
-                    logger.info("[MailCom] 锁定最新%s候选，等待 %ss 确认", value_label, settle)
+                    logger.info("[%s] 锁定最新%s候选，等待 %ss 确认", log_tag, value_label, settle)
         except MailComError as exc:
             last_error = str(exc)
-            logger.warning("[MailCom] %s", exc)
+            logger.warning("[%s] %s", log_tag, exc)
 
         now = time.monotonic()
         if best_value and settle_until is not None and now >= settle_until:

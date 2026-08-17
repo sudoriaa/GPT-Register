@@ -10,7 +10,7 @@ EMAIL_SOURCE 支持单个或多个来源：
     "gptmail"
     "mailnest"
     "cloudmail"
-    "mailcom"
+    "mailcom"             # mail.com / GMX / Caramail 共用邮箱池
     "outlook,generic_api,mailcom,mailnest,cloudmail"          # 按顺序兜底
     ["outlook", "generic_api", "mailcom", "mailnest", "cloudmail"]  # 也兼容列表写法
 """
@@ -20,7 +20,14 @@ from typing import Iterable
 logger = logging.getLogger(__name__)
 
 _VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "xbovo", "imap_pass", "mailcom")
-_SOURCE_ALIASES = {"mail_com": "mailcom", "mail.com": "mailcom"}
+_SOURCE_ALIASES = {
+    "mail_com": "mailcom",
+    "mail.com": "mailcom",
+    "gmx": "mailcom",
+    "gmx.com": "mailcom",
+    "caramail": "mailcom",
+    "caramail.com": "mailcom",
+}
 
 
 def parse_email_sources(value=None) -> list[str]:

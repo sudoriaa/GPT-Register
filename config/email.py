@@ -13,7 +13,7 @@ USE_EMAIL_SERVICE = False
 #   "cloudflare" — Cloudflare Worker 临时邮箱（cloudflare_temp_email），API 创建并取码
 #   "generic_api"       — 通用 API 取码邮箱池（邮箱----取码地址）
 #   "imap_pass"         — 标准 IMAP 邮箱（邮箱----密码），如 Roundcube 后端，IMAP 直连取信
-#   "mailcom"           — mail.com 邮箱池（邮箱地址----登录密码），mobile API 协议取信
+#   "mailcom"           — mail.com / GMX / Caramail 邮箱池（邮箱地址----登录密码），按域名选择 SDK 或 IMAP
 #   "xbovo"             — xbovo iCloud Hide My Email API（邮箱----alias_xxx；与 generic_api 同池）
 #   "gptmail"           — GPTMail 临时邮箱 API（运行时随机生成邮箱并自动收码）
 #   "mailnest"          — MailNest/迈巢临时邮箱 API（运行时购买邮箱并自动收码）
@@ -67,8 +67,9 @@ IMAP_FOLDER = "INBOX"
 
 
 # ============================================================
-# mail.com 邮箱模式（maildotcom-sdk mobile API）
+# mail.com / GMX / Caramail 邮箱模式
 # EMAIL_SOURCE 含 "mailcom" 时启用。导入格式：邮箱地址----登录密码
+# mail.com 走 maildotcom-sdk mobile API；GMX/Caramail 按域名自动走 GMX IMAP SSL。
 # ============================================================
 
 # Node.js 20+ 可执行文件；留空自动从 PATH 查找 node。

@@ -586,7 +586,7 @@
             <option value="outlook">Outlook 邮箱池</option>
             <option value="generic_api">通用 API 取码邮箱</option>
             <option value="imap_pass">IMAP 邮箱（邮箱----密码）</option>
-            <option value="mailcom">mail.com（邮箱----登录密码）</option>
+            <option value="mailcom">mail.com / GMX / Caramail（邮箱----登录密码）</option>
           </select>
           <span class="hint">注册来源可在配置里填多个，例如：outlook,generic_api</span>
         </label>
@@ -596,7 +596,7 @@
         </label>
         <textarea id="importText" placeholder="Outlook: email----password----clientId----refreshToken
 通用API: email----取码地址
-mail.com: email----登录密码
+mail.com / GMX / Caramail: email----登录密码
 兼容格式: email---token---取码地址"></textarea>
         <div style="margin-top:10px;"><button class="btn primary" id="btnImport">导入</button></div>
       </div>
@@ -610,7 +610,7 @@ mail.com: email----登录密码
               <option value="outlook">Outlook 邮箱池</option>
               <option value="generic_api">通用 API 邮箱池</option>
               <option value="imap_pass">IMAP 邮箱池</option>
-              <option value="mailcom">mail.com 邮箱池</option>
+              <option value="mailcom">mail.com / GMX 邮箱池</option>
               <option value="cloudflare_domain">域名邮箱池</option>
             </select>
             <input id="qOutlook" placeholder="搜索邮箱、状态…">
@@ -2291,7 +2291,7 @@ $('#copyAllLines').addEventListener('click', async () => {
 // ---------- 邮箱池 ----------
 function poolKey(r) { return `${r.source || $('#poolSource')?.value || 'outlook'}|${r.email || ''}`; }
 function poolLabel(src) {
-  return ({outlook:'Outlook', generic_api:'通用API', imap_pass:'IMAP', mailcom:'mail.com', cloudflare_domain:'域名邮箱'})[src] || src || '-';
+  return ({outlook:'Outlook', generic_api:'通用API', imap_pass:'IMAP', mailcom:'mail.com / GMX', cloudflare_domain:'域名邮箱'})[src] || src || '-';
 }
 async function loadOutlook() {
   try {
@@ -2475,7 +2475,7 @@ async function deleteAllOutlook() {
     outlook: 'Outlook 邮箱池',
     generic_api: '通用 API 邮箱池',
     imap_pass: 'IMAP 邮箱池',
-    mailcom: 'mail.com 邮箱池',
+    mailcom: 'mail.com / GMX 邮箱池',
     cloudflare_domain: '域名邮箱池',
   })[source] || source;
   const message = `确定删除“${scopeLabel}”中的全部邮箱素材吗？\n\n此操作不受搜索条件影响，且不可撤销。正在运行任务使用的邮箱会由后端保护并保留。`;

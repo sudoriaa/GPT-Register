@@ -2497,7 +2497,7 @@
             <button type="button" class="outlook-v2-select-item" data-value="outlook" role="option">Outlook 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="imap_pass" role="option">IMAP 邮箱池</button>
-            <button type="button" class="outlook-v2-select-item" data-value="mailcom" role="option">mail.com 邮箱池</button>
+            <button type="button" class="outlook-v2-select-item" data-value="mailcom" role="option">mail.com / GMX 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="cloudflare_domain" role="option">域名邮箱池</button>
           </div>
           <input type="hidden" id="poolSourceV2" value="all">
@@ -2639,7 +2639,7 @@
             <button type="button" class="outlook-v2-select-item is-active" data-value="outlook" role="option">Outlook 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 取码邮箱</button>
             <button type="button" class="outlook-v2-select-item" data-value="imap_pass" role="option">IMAP 邮箱（邮箱----密码）</button>
-            <button type="button" class="outlook-v2-select-item" data-value="mailcom" role="option">mail.com（邮箱----登录密码）</button>
+            <button type="button" class="outlook-v2-select-item" data-value="mailcom" role="option">mail.com / GMX / Caramail（邮箱----登录密码）</button>
             <button type="button" class="outlook-v2-select-item" data-value="xbovo" role="option">xbovo（iCloud API）</button>
           </div>
           <input type="hidden" id="importSourceV2" value="outlook">
@@ -2657,7 +2657,7 @@
       </label>
       <label class="outlook-import-field">
         <span>邮箱素材</span>
-        <textarea id="importTextV2" placeholder="Outlook: email----password----clientId----refreshToken&#10;通用API: email----取码地址&#10;mail.com: email----登录密码&#10;IMAP: email----密码 或 email----密码----服务商地址&#10;xbovo: email----alias_xxx"></textarea>
+        <textarea id="importTextV2" placeholder="Outlook: email----password----clientId----refreshToken&#10;通用API: email----取码地址&#10;mail.com / GMX / Caramail: email----登录密码&#10;IMAP: email----密码 或 email----密码----服务商地址&#10;xbovo: email----alias_xxx"></textarea>
       </label>
     </div>
     <div class="outlook-import-foot">
@@ -5776,7 +5776,7 @@ const POOL_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 邮箱池',
   imap_pass: 'IMAP 邮箱池',
-  mailcom: 'mail.com 邮箱池',
+  mailcom: 'mail.com / GMX 邮箱池',
   cloudflare_domain: '域名邮箱池',
 };
 function setPoolSourceV2(val) {
@@ -5818,7 +5818,7 @@ function setPoolTokenV2(val) {
 }
 function poolKey(r) { return `${r.source || getPoolSource() || 'outlook'}|${r.email || ''}`; }
 function poolLabel(src) {
-  return ({outlook:'Outlook', generic_api:'通用API', imap_pass:'IMAP', mailcom:'mail.com', cloudflare_domain:'域名邮箱'})[src] || src || '-';
+  return ({outlook:'Outlook', generic_api:'通用API', imap_pass:'IMAP', mailcom:'mail.com / GMX', cloudflare_domain:'域名邮箱'})[src] || src || '-';
 }
 async function loadOutlook() {
   try {
@@ -6187,7 +6187,7 @@ const IMPORT_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 取码邮箱',
   imap_pass: 'IMAP 邮箱（邮箱----密码）',
-  mailcom: 'mail.com（邮箱----登录密码）',
+  mailcom: 'mail.com / GMX / Caramail（邮箱----登录密码）',
   xbovo: 'xbovo（iCloud API）',
 };
 function setImportSourceV2(val) {
