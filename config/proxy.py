@@ -21,7 +21,7 @@ PROXY_POOL = [
 
 # 套餐/Plus 试用资格查询与 Codex Agent Token 生成共用这组独立网络策略，
 # 避免批量请求被注册代理池中的临时本地代理拖垮，也避免无条件直连造成出口策略失控。
-#   auto   = 优先使用 PLAN_CHECK_PROXY 或代理池；本地代理端口未监听时回退直连
+#   auto   = 优先使用系统代理；没有系统代理时使用 PLAN_CHECK_PROXY 或代理池
 #   proxy  = 强制使用 PLAN_CHECK_PROXY 或代理池，失败直接报错
 #   direct = 始终直连
 PLAN_CHECK_PROXY_MODE = "auto"
@@ -49,13 +49,13 @@ PROXY_RETRY_MAX_ATTEMPTS = 4
 PROXY_RETRY_DELAY = 1.5
 
 # 查套餐 / 生成 Codex Agent Token 使用独立的短超时和有限重试，避免后台任务长时间卡住。
-PLAN_CHECK_TIMEOUT = 15.0
-PLAN_CHECK_MAX_ATTEMPTS = PROXY_RETRY_MAX_ATTEMPTS
-PLAN_CHECK_RETRY_DELAY = 1.5
+PLAN_CHECK_TIMEOUT = 8.0
+PLAN_CHECK_MAX_ATTEMPTS = 2
+PLAN_CHECK_RETRY_DELAY = 0.5
 
-# 新注册账号的权益可能存在短暂同步延迟。首次查询失败，或返回 free 且暂未发现
-# Plus 试用资格时，等待该秒数后再复查一次；设为 0 可关闭复查。
-PLAN_CHECK_REGISTRATION_RECHECK_DELAY = 2.0
+# 新注册账号返回 free 且暂未发现 Plus 试用资格时，可等待该秒数后复查一次；
+# 默认 0 表示不复查，避免额外执行一轮完整网络请求。
+PLAN_CHECK_REGISTRATION_RECHECK_DELAY = 0.0
 
 # 自动、手动和批量套餐查询共用同一个后台队列；Codex Agent Token 使用独立队列，
 # 但复用这里的网络模式、请求启动间隔与随机抖动，避免批量后台请求过于集中。

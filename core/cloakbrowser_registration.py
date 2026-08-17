@@ -21,6 +21,7 @@ from core.registration_ip import (
 # 复用 Roxy 注册流程里已维护好的页面操作函数。
 from core.roxy_registration import (  # noqa: F401
     _maybe_accept, _submit_email_and_wait_next, _fill_password_page_if_present,
+    _fill_password_page_with_otp_fallback,
     _click_continue_with_password, _clear_otp_inputs, _type_otp, _click_continue,
     _wait_after_email_otp_submit, _click_resend_email_otp, _complete_profile_page,
     _fetch_chatgpt_session, _check_manual_stop, _enable_2fa_with_retry, _add_password_post_signup,
@@ -93,7 +94,7 @@ def run_cloak_registration(
             lambda: _submit_email_and_wait_next(driver, email, attempts=3),
             stage_url=auth_entry_url,
             resume_from_state=lambda state, _report: (
-                state in ("password", "otp", "profile", "chatgpt", "logged_in"),
+                state in ("password", "login_password", "otp", "profile", "chatgpt", "logged_in"),
                 state,
             ),
         )
@@ -110,18 +111,30 @@ def run_cloak_registration(
             _submit_email_and_wait_next(driver, email, attempts=2)
 
         def _run_password_stage():
+            nonlocal otp_after_ts
             if next_state == "otp":
                 if _register_set_password_enabled():
                     if _click_continue_with_password(driver, timeout=20):
-                        return _fill_password_page_if_present(driver, email, timeout=30), None
+                        otp_after_ts = time.time()
+                        return _fill_password_page_with_otp_fallback(
+                            driver,
+                            email,
+                            timeout=30,
+                            otp_fallback_url=password_stage_url,
+                        )
                     logger.info("[Cloak注册][密码] 未找到'使用密码继续'入口，走纯 OTP 注册")
                 return None, "otp"
-            return _fill_password_page_if_present(driver, email, timeout=25), None
+            otp_after_ts = time.time()
+            return _fill_password_page_with_otp_fallback(
+                driver,
+                email,
+                timeout=25,
+            )
 
         if advanced_state is None:
             def _password_resume(state, _report):
                 progressed = state in ("profile", "chatgpt", "logged_in") or (
-                    next_state == "password" and state == "otp"
+                    next_state in ("password", "login_password") and state == "otp"
                 )
                 return progressed, (None, state if progressed else None)
 
@@ -236,7 +249,8 @@ def run_cloak_registration(
             driver,
             "读取登录会话",
             lambda: _fetch_chatgpt_session(driver, timeout=120),
-            stage_url="https://chatgpt.com/",
+            # session 阶段只观察 OAuth 自动跳转；恢复器也不得主动重进首页。
+            stage_url=None,
         )
         access_token = session_info["accessToken"]
         logger.info("[Cloak注册] 已拿到 accessToken：%s", email)
@@ -297,7 +311,10 @@ def run_cloak_registration(
             access_token=access_token,
             totp_secret=totp_secret,
             email_source=resolve_email_source(email),
-            proxy_used=((opened.raw or {}).get("proxy") if opened else None) or proxy or None,
+            proxy_used=(
+                ((opened.raw or {}).get("upstream_proxy") or (opened.raw or {}).get("proxy"))
+                if opened else None
+            ) or proxy or None,
             registration_ip=registration_ip or None,
             batch_dir=batch_dir,
             extra={

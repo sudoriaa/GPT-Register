@@ -1,0 +1,224 @@
+.mailcom-converter {
+  display: grid;
+  gap: 18px;
+  width: 100%;
+  padding: 24px;
+  border: 1px solid var(--line, #d9e2ec);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.mailcom-converter-head,
+.mailcom-converter-panel-head,
+.mailcom-converter-actions,
+.mailcom-converter-foot,
+.mailcom-converter-stats,
+.mailcom-converter-format {
+  display: flex;
+  align-items: center;
+}
+
+.mailcom-converter-head,
+.mailcom-converter-panel-head,
+.mailcom-converter-foot {
+  justify-content: space-between;
+}
+
+.mailcom-converter-head {
+  gap: 16px;
+}
+
+.mailcom-converter-head h1 {
+  margin: 0;
+  color: var(--text, #172033);
+  font-size: 24px;
+  line-height: 1.3;
+}
+
+.mailcom-converter-head p,
+.mailcom-converter-status {
+  margin: 6px 0 0;
+  color: var(--muted, #667085);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.mailcom-converter-format {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line, #d9e2ec);
+  border-radius: 8px;
+  background: var(--soft, #f7f9fc);
+  color: var(--muted, #667085);
+  font-size: 13px;
+}
+
+.mailcom-converter-format code {
+  color: var(--text, #172033);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 600;
+}
+
+.mailcom-converter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.mailcom-converter-panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line, #d9e2ec);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+}
+
+.mailcom-converter-panel-head {
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.mailcom-converter-panel-head h2 {
+  margin: 0;
+  color: var(--text, #172033);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.mailcom-converter-panel-head span,
+.mailcom-converter-shortcut {
+  color: var(--muted, #667085);
+  font-size: 12px;
+}
+
+.mailcom-converter-panel textarea {
+  display: block;
+  width: 100%;
+  min-height: 330px;
+  margin: 0;
+  padding: 12px 14px;
+  resize: vertical;
+  border: 1px solid var(--line, #d9e2ec);
+  border-radius: 7px;
+  outline: none;
+  background: var(--surface, #fff);
+  color: var(--text, #172033);
+  font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mailcom-converter-panel textarea:focus {
+  border-color: var(--blue, #2563eb);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue, #2563eb) 14%, transparent);
+}
+
+.mailcom-converter-panel textarea[readonly] {
+  background: var(--soft, #f7f9fc);
+}
+
+.mailcom-converter-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mailcom-converter-actions .btn,
+.mailcom-converter-example {
+  min-height: 34px;
+}
+
+.mailcom-converter-shortcut {
+  margin-left: auto;
+}
+
+.mailcom-converter-foot {
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
+.mailcom-converter-stats {
+  gap: 8px;
+}
+
+.mailcom-converter-stats span {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--soft, #f7f9fc);
+  color: var(--muted, #667085);
+  font-size: 12px;
+}
+
+.mailcom-converter-stats span:first-child strong {
+  color: var(--green, #16803c);
+}
+
+.mailcom-converter-stats span:last-child strong {
+  color: var(--red, #c2413a);
+}
+
+.mailcom-converter-status {
+  margin: 0;
+  text-align: right;
+}
+
+.mailcom-converter-status.is-success {
+  color: var(--green, #16803c);
+}
+
+.mailcom-converter-status.is-warning {
+  color: var(--amber, #b7791f);
+}
+
+@media (max-width: 900px) {
+  .mailcom-converter-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .mailcom-converter {
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .mailcom-converter-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mailcom-converter-example {
+    width: 100%;
+  }
+
+  .mailcom-converter-panel {
+    padding: 12px;
+  }
+
+  .mailcom-converter-panel textarea {
+    min-height: 240px;
+  }
+
+  .mailcom-converter-shortcut {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .mailcom-converter-status {
+    width: 100%;
+    text-align: left;
+  }
+}
+
+@media (max-width: 700px) {
+  nav .nav-inner {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  nav .nav-inner > button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}

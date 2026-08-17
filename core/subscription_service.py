@@ -860,6 +860,7 @@ def _query_plan_with_proxy_rotation(
                 proxy=proxy,
                 max_attempts=1,
                 retry_delay=0,
+                include_subscription=True,
             )
             if isinstance(raw, dict):
                 redacted = _redact_payload(raw, secrets)

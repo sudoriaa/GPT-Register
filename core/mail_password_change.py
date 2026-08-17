@@ -410,7 +410,9 @@ def change_mailcom_password_for_email(
     # 回写内存缓存，后续 fetch_latest_otp 会用新密码
     from core.mailcom_client import MailComAccount
 
-    _CONTEXT_CACHE[email] = MailComAccount(email=email, password=new_password)
+    updated_context = MailComAccount(email=email, password=new_password)
+    _CONTEXT_CACHE[email] = updated_context
+    _CONTEXT_CACHE[email.strip().lower()] = updated_context
 
     # 回写 DB（email_pool.password）
     try:

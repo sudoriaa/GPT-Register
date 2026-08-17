@@ -9,6 +9,7 @@
 用于注册的API邮箱.txt
 用于注册的IMAP邮箱.json
 用于注册的IMAP邮箱.txt
+用于注册的MailCom邮箱.json
 
 # 销套餐操作日志
 销套餐日志/
@@ -41,6 +42,7 @@ data/
 # ============================================================
 __pycache__/
 .venv/
+node_modules/
 *.py[cod]
 *$py.class
 *.so

@@ -10,15 +10,17 @@ EMAIL_SOURCE 支持单个或多个来源：
     "gptmail"
     "mailnest"
     "cloudmail"
-    "outlook,generic_api,mailnest,cloudmail"          # 按顺序兜底
-    ["outlook", "generic_api", "mailnest", "cloudmail"]  # 也兼容列表写法
+    "mailcom"
+    "outlook,generic_api,mailcom,mailnest,cloudmail"          # 按顺序兜底
+    ["outlook", "generic_api", "mailcom", "mailnest", "cloudmail"]  # 也兼容列表写法
 """
 import logging
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-_VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "xbovo", "imap_pass")
+_VALID_SOURCES = ("outlook", "generic_api", "cloudflare_domain", "cloudflare", "gptmail", "mailnest", "cloudmail", "xbovo", "imap_pass", "mailcom")
+_SOURCE_ALIASES = {"mail_com": "mailcom", "mail.com": "mailcom"}
 
 
 def parse_email_sources(value=None) -> list[str]:
@@ -35,7 +37,8 @@ def parse_email_sources(value=None) -> list[str]:
 
     out: list[str] = []
     for item in raw:
-        s = str(item or "").strip().strip('"\'')
+        s = str(item or "").strip().strip('"\'').lower()
+        s = _SOURCE_ALIASES.get(s, s)
         if not s:
             continue
         if s not in _VALID_SOURCES:
@@ -67,6 +70,9 @@ def _pick_from_source(source: str) -> str:
         return pick_account().email
     if source == "imap_pass":
         from core.imap_mail_client import pick_account
+        return pick_account().email
+    if source == "mailcom":
+        from core.mailcom_client import pick_account
         return pick_account().email
     from core.outlook_client import pick_account
     return pick_account().email
@@ -104,6 +110,8 @@ def resolve_email_source(email: str) -> str:
         return "cloudmail"
 
     from core import db
+    if db.get_mailcom_email_by_email(email):
+        return "mailcom"
     if db.get_generic_api_email_by_email(email):
         return "generic_api"
     if db.get_imap_email_by_email(email):
@@ -183,6 +191,9 @@ def wait_for_otp(
     if source == "imap_pass":
         from core.imap_mail_client import fetch_latest_otp
         return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
+    if source == "mailcom":
+        from core.mailcom_client import fetch_latest_otp
+        return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
     from core.outlook_client import fetch_latest_otp
     return fetch_latest_otp(email, after_ts=after_ts, **extra_kwargs)
 
@@ -247,6 +258,9 @@ def wait_for_reset_link(
     if source == "imap_pass":
         from core.imap_mail_client import fetch_latest_reset_link
         return fetch_latest_reset_link(email, after_ts=after_ts, **extra_kwargs)
+    if source == "mailcom":
+        from core.mailcom_client import fetch_latest_reset_link
+        return fetch_latest_reset_link(email, after_ts=after_ts, **extra_kwargs)
     from core.outlook_client import fetch_latest_otp
     return fetch_latest_otp(email, after_ts=after_ts, extractor=_extract_reset_link, **extra_kwargs)
 
@@ -275,6 +289,9 @@ def release_email(email: str, status: str = "available", note: str | None = None
     elif source == "imap_pass":
         from core.imap_mail_client import release_account
         release_account(email, status=status, note=note)
+    elif source == "mailcom":
+        from core.mailcom_client import release_account
+        release_account(email, status=status, note=note)
     else:
         from core.outlook_client import release_account
         release_account(email, status=status, note=note)
@@ -297,6 +314,8 @@ def release_email_if_unconsumed(email: str, note: str | None = None) -> bool:
         changed = db.release_unconsumed_domain_email(email, note=note)
     elif source == "imap_pass":
         changed = db.release_unconsumed_imap_email(email, note=note)
+    elif source == "mailcom":
+        changed = db.release_unconsumed_mailcom_email(email, note=note)
     else:
         # 临时邮箱不重新进入本地池，只清理进程上下文；已有本地账号时保留上下文。
         if db.get_account_by_email(email) is not None:

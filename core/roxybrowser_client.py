@@ -7,7 +7,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 
@@ -24,6 +24,7 @@ class RoxyOpenResult:
     webdriver_url: str | None = None
     ws_endpoint: str | None = None
     created_by_run: bool = False
+    proxy_url: str | None = None
 
 
 def _strip_slashes(value: str) -> str:
@@ -89,6 +90,50 @@ def _proxy_url_to_roxy_info(proxy_url: str) -> dict:
     if check_channel:
         info["checkChannel"] = check_channel
     return info
+
+
+def _proxy_record_to_url(proxy: dict | None) -> str:
+    """把 Roxy 代理池/custom proxyInfo 转成可持久化的标准代理 URL。"""
+    row = proxy if isinstance(proxy, dict) else {}
+    host = str(
+        row.get("host")
+        or row.get("proxyHost")
+        or row.get("hostname")
+        or ""
+    ).strip()
+    port = str(row.get("port") or row.get("proxyPort") or "").strip()
+    if not host or not port:
+        return ""
+
+    protocol = str(
+        row.get("protocol")
+        or row.get("proxyCategory")
+        or row.get("proxyType")
+        or "http"
+    ).strip().lower()
+    scheme = {
+        "http": "http",
+        "https": "https",
+        "socks5": "socks5",
+        "socks5h": "socks5h",
+    }.get(protocol, "http")
+    username = str(
+        row.get("proxyUserName")
+        or row.get("proxyUsername")
+        or row.get("proxyAccount")
+        or row.get("username")
+        or ""
+    )
+    password = str(
+        row.get("proxyPassword")
+        or row.get("password")
+        or ""
+    )
+    auth = ""
+    if username or password:
+        auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
+    safe_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    return f"{scheme}://{auth}{safe_host}:{port}"
 
 
 def _dig(payload: dict, *keys: str):
@@ -160,6 +205,8 @@ class RoxyBrowserClient:
         # Project proxy-pool rotation uses the same per-task rule.  Without
         # this, a retry could randomly select the broken endpoint again.
         self._used_local_proxy_urls: set[str] = set()
+        self._profile_proxy_urls: dict[str, str] = {}
+        self._last_picked_roxy_proxy_url = ""
         self._preferred_proxy_supplied = preferred_proxy is not None
         self._preferred_proxy_url = str(preferred_proxy or "").strip()
         if self.token:
@@ -408,6 +455,8 @@ class RoxyBrowserClient:
 
     def create_profile(self, payload: dict | None = None) -> str:
         body = dict(getattr(_cfg, "ROXY_PROFILE_CREATE_PAYLOAD", {}) or {})
+        selected_proxy_url = _proxy_record_to_url(body.get("proxyInfo"))
+        self._last_picked_roxy_proxy_url = ""
         random_name_enabled = bool(getattr(_cfg, "ROXY_RANDOM_PROFILE_NAME_ON_CREATE", True))
         if random_name_enabled:
             # 覆盖 ROXY_PROFILE_CREATE_PAYLOAD 里的固定 name，避免所有 Roxy 窗口同名。
@@ -447,12 +496,14 @@ class RoxyBrowserClient:
             and self._preferred_proxy_url not in self._used_local_proxy_urls
         ):
             body["proxyInfo"] = _proxy_url_to_roxy_info(self._preferred_proxy_url)
+            selected_proxy_url = self._preferred_proxy_url
             self._used_local_proxy_urls.add(self._preferred_proxy_url)
         if not body.get("proxyInfo") and not explicit_direct and (use_roxy_pool or use_local_pool):
             if use_roxy_pool:
                 proxy_info = self._pick_roxy_pool_proxy_info()
                 if proxy_info:
                     body["proxyInfo"] = proxy_info
+                    selected_proxy_url = self._last_picked_roxy_proxy_url
             if not body.get("proxyInfo") and use_local_pool:
                 from config import proxy as _proxy_cfg
 
@@ -460,6 +511,7 @@ class RoxyBrowserClient:
                 if proxy_url:
                     proxy_info = _proxy_url_to_roxy_info(proxy_url)
                     body["proxyInfo"] = proxy_info
+                    selected_proxy_url = proxy_url
                     logger.info(
                         "[Roxy] 创建环境启用代理池：proxy=%s type=%s host=%s port=%s",
                         _mask_proxy(proxy_url),
@@ -471,6 +523,9 @@ class RoxyBrowserClient:
                     logger.warning("[Roxy] 已启用 ROXY_CREATE_USE_PROXY_POOL，但 PROXY_POOL 为空，本次创建环境不设置代理")
         if payload:
             body.update(payload)
+            explicit_proxy_url = _proxy_record_to_url(body.get("proxyInfo"))
+            if explicit_proxy_url:
+                selected_proxy_url = explicit_proxy_url
         if not body.get("workspaceId"):
             raise RuntimeError(
                 "Roxy 创建环境需要 workspaceId。请在 config/roxybrowser.py 或 WebUI 的 RoxyBrowser 配置中填写 ROXY_WORKSPACE_ID，"
@@ -494,6 +549,8 @@ class RoxyBrowserClient:
         ])
         if not profile_id:
             raise RuntimeError(f"Roxy 创建环境成功但未返回 dirId/profile_id: {result}")
+        if selected_proxy_url:
+            self._profile_proxy_urls[str(profile_id)] = selected_proxy_url
         return profile_id
 
     def _pick_local_proxy_url(self, proxy_cfg=None) -> str:
@@ -580,6 +637,7 @@ class RoxyBrowserClient:
             return {}
         module_id = int(module_id) if str(module_id).isdigit() else module_id
         self._used_roxy_proxy_module_ids.add(str(module_id))
+        self._last_picked_roxy_proxy_url = _proxy_record_to_url(proxy)
         logger.info(
             "[Roxy] 创建环境使用 Roxy 代理池：moduleId=%s protocol=%s ipType=%s remark=%s",
             module_id,
@@ -676,6 +734,7 @@ class RoxyBrowserClient:
             webdriver_url=webdriver_url,
             ws_endpoint=ws_endpoint,
             created_by_run=created_by_run,
+            proxy_url=self._profile_proxy_urls.get(str(pid)) or None,
         )
 
     def close_profile(self, profile_id: str) -> None:

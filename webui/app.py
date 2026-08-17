@@ -15,7 +15,7 @@ import re
 import threading
 import time
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from flask import Flask, Response, jsonify, make_response, render_template, request
 
@@ -58,7 +58,7 @@ def _pool_source_arg(default: str = "outlook") -> str:
     if not src and request.method == "POST":
         data = request.get_json(silent=True) or {}
         src = (data.get("source") or data.get("type") or "").strip()
-    return src if src in ("all", "outlook", "generic_api", "cloudflare_domain", "imap_pass") else default
+    return src if src in ("all", "outlook", "generic_api", "cloudflare_domain", "imap_pass", "mailcom") else default
 
 
 def _with_pool_source(rows: list[dict], source: str) -> list[dict]:
@@ -114,8 +114,9 @@ def _compact_account_for_list(row: dict) -> dict:
         "has_access_token": bool(str(row.get("access_token") or "").strip()),
         "has_refresh_token": bool(row.get("has_refresh_token")),
         "has_pickup_url": bool(row.get("has_pickup_url")),
-        "totp_enabled": bool(row.get("totp_secret")),
+        "totp_enabled": bool(str(row.get("totp_secret") or "").strip()),
         "has_chatgpt_password": bool(str(row.get("chatgpt_password") or "").strip()),
+        "has_registration_proxy": bool(_registration_proxy_copy_value(row)),
     }
 
     # 这些是列表固定列直接展示字段。
@@ -126,10 +127,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "oaics_status", "oaics_ok", "oaics_checked_at", "oaics_error",
         "oaics_session_kind", "oaics_method_status", "oaics_method_available",
         "plan_check_status", "codex_status",
-        # Read-only subscription facts and cancellation-task lifecycle.  The
-        # subscription id and all credentials deliberately stay out of compact rows.
-        "has_active_subscription", "subscription_status", "last_will_renew",
-        "last_purchase_origin_platform", "plan_cancels_at", "plan_renews_at",
+        # 只保留独立的取消套餐任务状态；账号列表不再展示订阅查询结果。
         "subscription_cancel_status", "subscription_cancel_error",
         "subscription_cancel_queued_at", "subscription_cancel_started_at",
         "subscription_cancel_completed_at", "subscription_cancel_protocol",
@@ -278,6 +276,10 @@ def _material_line_for_account(row: dict) -> str:
         pool_row = db.get_generic_api_email_by_email(email)
         if pool_row and pool_row.get("code_url"):
             return f"{email}----{pool_row.get('code_url')}"
+        # mail.com 协议邮箱池
+        mailcom_row = db.get_mailcom_email_by_email(email)
+        if mailcom_row:
+            return f"{email}----{mailcom_row.get('password') or ''}"
         # 再查 Outlook 池
         outlook_row = db.get_outlook_by_email(email)
         if outlook_row:
@@ -325,10 +327,42 @@ def _account_pickup_url(row: dict) -> str:
     return value if value.startswith(("http://", "https://")) else ""
 
 
+def _registration_proxy_copy_value(row: dict) -> str:
+    """注册代理复制格式：host:port:username:password；列表接口只返回 presence。"""
+    raw = str(row.get("registration_proxy") or row.get("proxy_used") or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        parts = raw.split(":", 3)
+        if len(parts) == 4 and parts[0] and parts[1].isdigit():
+            return raw
+        return ""
+    try:
+        parsed = urlparse(raw)
+        host = str(parsed.hostname or "").strip()
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if not host or not port:
+        return ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+    return f"{host}:{port}:{username}:{password}"
+
+
 def _account_secret_value(row: dict, field: str) -> str:
     field = (field or "").strip()
     if field == "access_token":
         return str(row.get("access_token") or "")
+    if field == "codex_refresh_token":
+        return db.get_codex_refresh_token(
+            str(row.get("email") or ""),
+            account_id=str(row.get("account_id") or ""),
+        )
+    if field == "totp_secret":
+        return str(row.get("totp_secret") or "").strip()
     if field == "copy_line":
         return str(row.get("copy_line") or "")
     if field == "codex_agent_token":
@@ -350,6 +384,8 @@ def _account_secret_value(row: dict, field: str) -> str:
         return str(row.get("chatgpt_password") or "")
     if field == "pickup_url":
         return _account_pickup_url(row)
+    if field == "registration_proxy":
+        return _registration_proxy_copy_value(row)
     if field == "delivery_line":
         return _delivery_line(row)
     if field == "free_line":
@@ -357,7 +393,7 @@ def _account_secret_value(row: dict, field: str) -> str:
     if field == "ship_line":
         # 发货导出：邮箱----密码----2FA密钥----AT，一行一个
         return _ship_line(row)
-    raise ValueError("field 仅支持 access_token/copy_line/codex_agent_token/material_line/material_with_at/xbovo_ship_url/chatgpt_password/pickup_url/delivery_line/free_line/ship_line")
+    raise ValueError("field 仅支持 access_token/codex_refresh_token/totp_secret/copy_line/codex_agent_token/material_line/material_with_at/xbovo_ship_url/chatgpt_password/pickup_url/registration_proxy/delivery_line/free_line/ship_line")
 
 
 def _compact_job_for_list(row: dict) -> dict:
@@ -487,6 +523,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             one = (
                 db.generic_api_email_pool_summary() if src == "generic_api"
                 else db.domain_email_pool_summary() if src == "cloudflare_domain"
+                else db.imap_email_pool_summary() if src == "imap_pass"
+                else db.mailcom_email_pool_summary() if src == "mailcom"
                 else db.outlook_pool_summary()
             )
             for k in pool:
@@ -535,14 +573,17 @@ def create_app(auth_code: str | None = None) -> Flask:
             result["items"] = _compact_accounts_for_list(result.get("items") or [])
             result.update({"ok": True, "page": page, "page_size": page_size, "compact": True})
             return jsonify(result)
-        return jsonify(db.list_accounts(
+        rows = db.list_accounts(
             limit=limit,
             archived=archived,
             plan_filter=plan_filter,
             q=q,
             registration_ip=registration_ip,
             account_group=account_group,
-        ))
+        )
+        # 兼容旧调用仍返回数组，但内容与分页接口保持同一份精简结构。
+        # 代理账号密码等敏感字段只允许通过 /secret 按需读取。
+        return jsonify(_compact_accounts_for_list(rows))
 
     @app.post("/api/accounts/import-tokens")
     def api_accounts_import_tokens():
@@ -1986,6 +2027,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             rows += _with_pool_source(db.list_generic_api_email_pool(status=status, limit=fetch_limit), "generic_api")
             rows += _with_pool_source(db.list_domain_email_pool(status=status, limit=fetch_limit), "cloudflare_domain")
             rows += _with_pool_source(db.list_imap_email_pool(status=status, limit=fetch_limit), "imap_pass")
+            rows += _with_pool_source(db.list_mailcom_email_pool(status=status, limit=fetch_limit), "mailcom")
             rows = sorted(rows, key=lambda x: str(x.get("created_at") or x.get("imported_at") or x.get("used_at") or ""), reverse=True)
         elif source == "generic_api":
             rows = _with_pool_source(db.list_generic_api_email_pool(status=status, limit=fetch_limit), "generic_api")
@@ -1993,6 +2035,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             rows = _with_pool_source(db.list_domain_email_pool(status=status, limit=fetch_limit), "cloudflare_domain")
         elif source == "imap_pass":
             rows = _with_pool_source(db.list_imap_email_pool(status=status, limit=fetch_limit), "imap_pass")
+        elif source == "mailcom":
+            rows = _with_pool_source(db.list_mailcom_email_pool(status=status, limit=fetch_limit), "mailcom")
         else:
             rows = _with_pool_source(db.list_outlook_pool(status=status, limit=fetch_limit), "outlook")
         if token_filter:
@@ -2020,6 +2064,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         粘贴文本导入邮箱素材。
         Outlook：email----password----clientId----refreshToken
         通用 API：email----code_url
+        mail.com：email----password
         带 token 的通用 API：email---token---code_url（token 丢弃）
         分隔符兼容 ---- 与 ====。
         """
@@ -2033,11 +2078,15 @@ def create_app(auth_code: str | None = None) -> Flask:
             if line.strip() and not line.strip().startswith("#")
         ]
         tokenized_lines = [_parse_tokenized_generic_api_line(line) for line in lines]
-        if lines and all(record is not None for record in tokenized_lines):
+        # 保留 Outlook 入口对旧三段格式的自动识别；显式选择 mail.com/IMAP/xbovo
+        # 时以用户选定来源为准，避免密码中带 ``---https://`` 被误判为通用 API。
+        if source in ("", "outlook", "generic_api") and lines and all(
+            record is not None for record in tokenized_lines
+        ):
             source = "generic_api"
         # xbovo（iCloud Hide My Email）与通用 API 同池：邮箱----alias_xxx（第二段是 API Key）
-        if source not in ("outlook", "generic_api", "xbovo", "imap_pass"):
-            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook / 通用 API / xbovo / IMAP"}), 400
+        if source not in ("outlook", "generic_api", "xbovo", "imap_pass", "mailcom"):
+            return jsonify({"ok": False, "error": "导入时请选择具体类型：Outlook / 通用 API / xbovo / IMAP / mail.com"}), 400
         as_registered = bool(data.get("as_registered", False))
         records = []
         converted = 0
@@ -2045,6 +2094,17 @@ def create_app(auth_code: str | None = None) -> Flask:
             if source == "generic_api" and tokenized_record is not None:
                 records.append(tokenized_record)
                 converted += 1
+                continue
+            if source == "mailcom":
+                delimiter = "----" if "----" in line else "====" if "====" in line else ""
+                if not delimiter:
+                    continue
+                email_raw, password_raw = line.split(delimiter, 1)
+                email_part = db.clean_pool_email_part(email_raw)
+                password_part = db.clean_mailcom_password_part(password_raw)
+                if not email_part or not password_part:
+                    continue
+                records.append({"email": email_part, "password": password_part})
                 continue
             parts = line.split("----") if "----" in line else line.split("====")
             parts = [p.strip() for p in parts]
@@ -2089,6 +2149,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                 "generic_api": "邮箱----取码地址，或 邮箱---token---取码地址",
                 "xbovo": "2 段：邮箱----alias_xxx（iCloud API Key）",
                 "imap_pass": "2 段：邮箱----密码（标准 IMAP 直连取信）",
+                "mailcom": "2 段：邮箱地址----登录密码",
             }.get(source, "4 段：email----password----clientId----refreshToken")
             return jsonify({"ok": False, "error": f"未解析到有效邮箱行（需 {need}，---- 或 ==== 分隔）"}), 400
         if as_registered:
@@ -2097,6 +2158,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             inserted, skipped = db.import_generic_api_emails(records)
         elif source == "imap_pass":
             inserted, skipped = db.import_imap_pass_emails(records, imap_host=imap_host)
+        elif source == "mailcom":
+            inserted, skipped = db.import_mailcom_emails(records)
         else:
             inserted, skipped = db.import_outlook_accounts(records)
         return jsonify({
@@ -2126,6 +2189,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             db.release_domain_email(email, status=status, note=data.get("note"))
         elif source == "imap_pass":
             db.release_imap_email(email, status=status, note=data.get("note"))
+        elif source == "mailcom":
+            db.release_mailcom_email(email, status=status, note=data.get("note"))
         else:
             db.release_outlook(email, status=status, note=data.get("note"))
         return jsonify({"ok": True})
@@ -2171,6 +2236,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                     db.release_domain_email(email, status=status, note=note)
                 elif item_source == "imap_pass":
                     db.release_imap_email(email, status=status, note=note)
+                elif item_source == "mailcom":
+                    db.release_mailcom_email(email, status=status, note=note)
                 else:
                     db.release_outlook(email, status=status, note=note)
                 updated.append({"email": email, "source": item_source, "status": status})
@@ -2198,6 +2265,8 @@ def create_app(auth_code: str | None = None) -> Flask:
             if source == "generic_api"
             else db.delete_imap_email(email)
             if source == "imap_pass"
+            else db.delete_mailcom_email(email)
+            if source == "mailcom"
             else db.delete_domain_email(email)
             if source == "cloudflare_domain"
             else db.delete_outlook(email)
@@ -2239,6 +2308,8 @@ def create_app(auth_code: str | None = None) -> Flask:
                 if item_source == "generic_api"
                 else db.delete_imap_email(email)
                 if item_source == "imap_pass"
+                else db.delete_mailcom_email(email)
+                if item_source == "mailcom"
                 else db.delete_domain_email(email)
                 if item_source == "cloudflare_domain"
                 else db.delete_outlook(email)
@@ -2262,10 +2333,10 @@ def create_app(auth_code: str | None = None) -> Flask:
         if data.get("confirm") is not True:
             return jsonify({"ok": False, "error": "必须传入 confirm: true 才能删除全部邮箱"}), 400
         source = str(data.get("source") or "all").strip().lower()
-        if source not in ("all", "outlook", "generic_api", "cloudflare_domain"):
+        if source not in ("all", "outlook", "generic_api", "cloudflare_domain", "imap_pass", "mailcom"):
             return jsonify({
                 "ok": False,
-                "error": "source 必须是 all / outlook / generic_api / cloudflare_domain",
+                "error": "source 必须是 all / outlook / generic_api / cloudflare_domain / imap_pass / mailcom",
             }), 400
         result = db.delete_all_email_pool(source=source)
         return jsonify({"ok": True, **result})
@@ -2963,12 +3034,21 @@ def create_app(auth_code: str | None = None) -> Flask:
             warning = ""
             if pool.get("available", 0) < count:
                 warning = f"IMAP 邮箱池仅 {pool.get('available', 0)} 个可用，少于任务数 {count}，不足的会失败"
+        elif sources == ["mailcom"]:
+            pool = db.mailcom_email_pool_summary()
+            warning = ""
+            if pool.get("available", 0) < count:
+                warning = f"mail.com 邮箱池仅 {pool.get('available', 0)} 个可用，少于任务数 {count}，不足的会失败"
         elif len(sources) > 1:
             available = 0
             if "outlook" in sources:
                 available += db.outlook_pool_summary().get("available", 0)
             if "generic_api" in sources:
                 available += db.generic_api_email_pool_summary().get("available", 0)
+            if "imap_pass" in sources:
+                available += db.imap_email_pool_summary().get("available", 0)
+            if "mailcom" in sources:
+                available += db.mailcom_email_pool_summary().get("available", 0)
             warning = ""
             if available < count:
                 warning = f"多个邮箱池合计仅 {available} 个可用，少于任务数 {count}，不足的会失败"

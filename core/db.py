@@ -41,6 +41,7 @@ _OUTLOOK_TXT = _PROJECT_ROOT / "用于注册的邮箱.txt"
 _GENERIC_API_EMAIL_JSON = _PROJECT_ROOT / "用于注册的API邮箱.json"
 _GENERIC_API_EMAIL_TXT = _PROJECT_ROOT / "用于注册的API邮箱.txt"
 _IMAP_EMAIL_JSON = _PROJECT_ROOT / "用于注册的IMAP邮箱.json"
+_MAILCOM_EMAIL_JSON = _PROJECT_ROOT / "用于注册的MailCom邮箱.json"
 _ACCOUNTS_JSON = _PROJECT_ROOT / "注册成功的邮箱.json"
 _ACCOUNTS_TXT = _PROJECT_ROOT / "注册成功的邮箱.txt"
 _TOKENS_TXT = _PROJECT_ROOT / "注册成功的token.txt"
@@ -120,6 +121,13 @@ def _imap_email_line(row: dict) -> str:
     return f"{base}----{host}" if host else base
 
 
+def _mailcom_email_line(row: dict) -> str:
+    return "----".join([
+        row.get("email") or "",
+        row.get("password") or "",
+    ])
+
+
 # ---- 导入文本清洗：去掉 "邮箱"/"密码" 等中文标签与首尾非法字符 ----
 _EMAIL_LABEL_RE = re.compile(r"^\s*(?:邮箱地址|邮箱|邮件|email|mail|user|账号|用户名|address)\s*[:：=]?\s*", re.I)
 _PASSWORD_LABEL_RE = re.compile(r"^\s*(?:密码|password|pass|pwd|密钥)\s*[:：=]?\s*", re.I)
@@ -142,6 +150,15 @@ def clean_pool_password_part(raw: str) -> str:
     s = str(raw or "").strip(_TRIM_CHARS)
     s = _PASSWORD_LABEL_RE.sub("", s).strip(_TRIM_CHARS)
     return s
+
+
+def clean_mailcom_password_part(raw: str) -> str:
+    """保留 mail.com 登录密码原文，仅去掉粘贴时的外围空白。
+
+    mail.com 密码可能合法地以 ``password`` / ``pass`` / ``pwd`` 开头，或以
+    引号、括号、冒号等符号开头和结尾，因此不能复用通用池的标签清洗器。
+    """
+    return str(raw or "").strip()
 
 
 _HOST_LABEL_RE = re.compile(r"^\s*(?:服务商地址|服务器|服务商|imap|server|host|地址)\s*[:：=]?\s*", re.I)
@@ -551,6 +568,17 @@ def _save_imap_emails(rows: list[dict]) -> None:
     _write_json(_IMAP_EMAIL_JSON, rows)
 
 
+def _load_mailcom_emails() -> list[dict]:
+    rows = _read_json(_MAILCOM_EMAIL_JSON, [])
+    return rows if isinstance(rows, list) else []
+
+
+def _save_mailcom_emails(rows: list[dict]) -> None:
+    for row in rows:
+        row["copy_line"] = _mailcom_email_line(row)
+    _write_json(_MAILCOM_EMAIL_JSON, rows)
+
+
 def _load_accounts() -> list[dict]:
     rows = _read_json(_ACCOUNTS_JSON, None)
     if not isinstance(rows, list):
@@ -683,6 +711,25 @@ def _decorate_generic_api_email(row: dict, account_by_email: dict[str, dict] | N
     return out
 
 
+def _decorate_mailcom_email(row: dict, account_by_email: dict[str, dict] | None = None) -> dict:
+    out = dict(row)
+    out["copy_line"] = _mailcom_email_line(out)
+    account = None
+    if account_by_email is not None:
+        account = account_by_email.get((out.get("email") or "").lower())
+    if account:
+        out["registered_account_id"] = account.get("id")
+        out["access_token"] = account.get("access_token")
+        out["access_token_preview"] = (
+            (account.get("access_token") or "")[:40] + "..."
+            if account.get("access_token")
+            else ""
+        )
+        out["account_copy_line"] = _account_line(account)
+        out["totp_secret"] = account.get("totp_secret")
+    return out
+
+
 def _get_conn() -> None:
     """兼容旧入口：初始化文件存储目录。"""
     _ensure_storage()
@@ -717,9 +764,24 @@ def insert_account(
     """插入或更新注册成功账号，返回本地文件中的 id。"""
     with _LOCK:
         accounts = _load_accounts()
-        outlook_rows = _load_outlook()
         existing = _find_by_email(accounts, email)
+        effective_email_source = (
+            email_source
+            if email_source is not None
+            else (existing or {}).get("email_source")
+        )
+        outlook_rows = (
+            []
+            if effective_email_source == "mailcom"
+            else _load_outlook()
+        )
+        mailcom_rows = (
+            _load_mailcom_emails()
+            if effective_email_source == "mailcom"
+            else []
+        )
         outlook_row = _find_by_email(outlook_rows, email)
+        mailcom_row = _find_by_email(mailcom_rows, email)
         extra_json = json.dumps(extra, ensure_ascii=False) if extra else None
 
         if existing is None:
@@ -758,7 +820,7 @@ def insert_account(
             "updated_at": _now(),
         })
 
-        if outlook_row:
+        if outlook_row and effective_email_source != "mailcom":
             row["password"] = outlook_row.get("password")
             row["client_id"] = outlook_row.get("client_id")
             row["refresh_token"] = outlook_row.get("refresh_token")
@@ -771,9 +833,23 @@ def insert_account(
             if totp_secret:
                 outlook_row["totp_secret"] = totp_secret
 
+        if mailcom_row and effective_email_source == "mailcom":
+            row["password"] = mailcom_row.get("password")
+            row["original_email_line"] = _mailcom_email_line(mailcom_row)
+            mailcom_row["status"] = "used"
+            mailcom_row["used_at"] = mailcom_row.get("used_at") or _now()
+            mailcom_row["registered_account_id"] = row_id
+            mailcom_row["access_token"] = access_token
+            mailcom_row["completed_at"] = _now()
+            if totp_secret:
+                mailcom_row["totp_secret"] = totp_secret
+
         row["copy_line"] = _account_line(row)
         _save_accounts(accounts)
-        _save_outlook(outlook_rows)
+        if effective_email_source != "mailcom":
+            _save_outlook(outlook_rows)
+        if effective_email_source == "mailcom":
+            _save_mailcom_emails(mailcom_rows)
         return row_id
 
 
@@ -809,6 +885,92 @@ def _atomic_write_codex_json(path: Path, payload: dict) -> None:
             pass
 
 
+def _codex_credential_email(path: Path, content: dict) -> str:
+    """Resolve a Codex credential's account email, including legacy filenames."""
+    profile_claim = content.get("profile_claim")
+    email = str(
+        content.get("email")
+        or (profile_claim.get("email") if isinstance(profile_claim, dict) else "")
+        or ""
+    ).strip().lower()
+    if email:
+        return email
+
+    stem = path.stem
+    without_prefix = stem[len("codex-"):] if stem.startswith("codex-") else stem
+    for suffix in ("-cpa-callback", "-sub2-callback"):
+        if without_prefix.lower().endswith(suffix):
+            without_prefix = without_prefix[:-len(suffix)]
+            break
+    parts = without_prefix.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].lower() in {
+        "free", "plus", "team", "pro", "enterprise",
+    }:
+        without_prefix = parts[0]
+    return without_prefix.strip().lower()
+
+
+def _load_codex_refresh_credentials() -> list[dict]:
+    """Load usable Codex RT records newest-first, skipping malformed files."""
+    if not _CODEX_DIR.exists():
+        return []
+    paths = list(_CODEX_DIR.glob("codex-*.json"))
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    credentials = []
+    for path in sorted(paths, key=_mtime, reverse=True):
+        try:
+            content = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(content, dict):
+            continue
+        refresh_token = str(content.get("refresh_token") or "").strip()
+        if not refresh_token:
+            continue
+        credentials.append({
+            "email": _codex_credential_email(path, content),
+            "account_id": str(content.get("account_id") or "").strip(),
+            "refresh_token": refresh_token,
+        })
+    return credentials
+
+
+def _select_codex_refresh_token(
+    credentials: list[dict],
+    *,
+    email: str,
+    account_id: str | None = None,
+) -> str:
+    """Select an RT without crossing two explicit OpenAI account IDs."""
+    email_key = str(email or "").strip().lower()
+    account_key = str(account_id or "").strip()
+    if account_key:
+        for credential in credentials:
+            if str(credential.get("account_id") or "") == account_key:
+                return str(credential.get("refresh_token") or "")
+        # Legacy credentials may predate account_id.  Email fallback is safe
+        # only when the credential itself has no explicit, conflicting ID.
+        for credential in credentials:
+            if (
+                not str(credential.get("account_id") or "")
+                and email_key
+                and str(credential.get("email") or "") == email_key
+            ):
+                return str(credential.get("refresh_token") or "")
+        return ""
+    if email_key:
+        for credential in credentials:
+            if str(credential.get("email") or "") == email_key:
+                return str(credential.get("refresh_token") or "")
+    return ""
+
+
 def _matching_codex_credential(
     email: str,
     account_id: str,
@@ -830,7 +992,7 @@ def _matching_codex_credential(
             for key in ("access_token", "refresh_token", "id_token")
         ):
             continue
-        saved_email = str(content.get("email") or "").strip().lower()
+        saved_email = _codex_credential_email(path, content)
         saved_account_id = str(content.get("account_id") or "").strip()
         if account_id and saved_account_id == account_id:
             account_match = (path, content)
@@ -1843,8 +2005,6 @@ def list_account_plan_check_statuses(
         "expires_at", "plan_expires_at", "plan_renews_at", "renews_at",
         "billing_period", "billing_currency", "discount_amount", "discount_type",
         "discount_expires_at", "discount_promo_campaign_id",
-        "has_active_subscription", "subscription_status", "last_will_renew",
-        "last_purchase_origin_platform", "plan_cancels_at",
         "token_expired", "token_expires_at", "plan_check_needs_live_check",
         "access_token_invalid", "access_token_status",
         "access_token_status_reason", "access_token_status_checked_at",
@@ -1994,6 +2154,7 @@ def account_asset_presence(account_rows: list[dict] | None) -> dict[int, dict]:
             (
                 int(row.get("id") or 0),
                 str(row.get("email") or "").strip().lower(),
+                str(row.get("account_id") or "").strip(),
                 str(row.get("updated_at") or ""),
             )
             for row in rows
@@ -2010,39 +2171,7 @@ def account_asset_presence(account_rows: list[dict] | None) -> dict[int, dict]:
             for row in _load_generic_api_emails()
             if str(row.get("email") or "").strip()
         }
-        target_emails = {
-            str(row.get("email") or "").strip().lower()
-            for row in rows
-            if str(row.get("email") or "").strip()
-        }
-        codex_rt_emails: set[str] = set()
-        if _CODEX_DIR.exists() and target_emails:
-            for path in _CODEX_DIR.glob("codex-*.json"):
-                try:
-                    content = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                profile_claim = content.get("profile_claim")
-                email = str(
-                    content.get("email")
-                    or (profile_claim.get("email") if isinstance(profile_claim, dict) else "")
-                    or ""
-                ).strip().lower()
-                if not email:
-                    stem = path.stem
-                    without_prefix = stem[len("codex-"):] if stem.startswith("codex-") else stem
-                    for suffix in ("-cpa-callback", "-sub2-callback"):
-                        if without_prefix.lower().endswith(suffix):
-                            without_prefix = without_prefix[:-len(suffix)]
-                            break
-                    parts = without_prefix.rsplit("-", 1)
-                    if len(parts) == 2 and parts[1].lower() in {
-                        "free", "plus", "team", "pro", "enterprise",
-                    }:
-                        without_prefix = parts[0]
-                    email = without_prefix.strip().lower()
-                if email in target_emails and str(content.get("refresh_token") or "").strip():
-                    codex_rt_emails.add(email)
+        codex_credentials = _load_codex_refresh_credentials()
 
         out: dict[int, dict] = {}
         for row in rows:
@@ -2061,7 +2190,11 @@ def account_asset_presence(account_rows: list[dict] | None) -> dict[int, dict]:
                         code_url = candidate
             out[row_id] = {
                 "has_pickup_url": bool(code_url),
-                "has_refresh_token": email in codex_rt_emails,
+                "has_refresh_token": bool(_select_codex_refresh_token(
+                    codex_credentials,
+                    email=email,
+                    account_id=str(row.get("account_id") or ""),
+                )),
             }
         expired_keys = [
             key
@@ -2081,6 +2214,21 @@ def account_asset_presence(account_rows: list[dict] | None) -> dict[int, dict]:
             {row_id: dict(flags) for row_id, flags in out.items()},
         )
         return out
+
+
+def get_codex_refresh_token(email: str, account_id: str | None = None) -> str:
+    """Return the OpenAI/Codex RT for an account, never the Outlook mail RT."""
+    email_key = str(email or "").strip().lower()
+    account_key = str(account_id or "").strip()
+    if not email_key and not account_key:
+        return ""
+
+    with _LOCK:
+        return _select_codex_refresh_token(
+            _load_codex_refresh_credentials(),
+            email=email_key,
+            account_id=account_key,
+        )
 
 
 def list_account_groups(*, include_archived: bool = True) -> dict:
@@ -2912,17 +3060,23 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
       - outlook: records 元素 {email,password,client_id,refresh_token[,access_token,totp_secret]}
       - generic_api / xbovo: records 元素 {email,code_url[,access_token,totp_secret]}
         （xbovo 与 generic_api 同池，code_url 为 iCloud API Key）
+      - mailcom: records 元素 {email,password[,access_token,totp_secret]}
 
     返回 (新增账号数, 跳过数)。已存在账号会跳过；邮箱池中已存在的素材会复用并标记 used。
     """
     source = (source or "").strip().lower()
-    if source not in ("outlook", "generic_api", "xbovo"):
-        raise ValueError("source 必须显式传入 outlook / generic_api / xbovo")
+    if source not in ("outlook", "generic_api", "xbovo", "mailcom"):
+        raise ValueError("source 必须显式传入 outlook / generic_api / xbovo / mailcom")
 
     with _LOCK:
         accounts = _load_accounts()
-        outlook_rows = _load_outlook()
-        generic_rows = _load_generic_api_emails()
+        outlook_rows = _load_outlook() if source == "outlook" else []
+        generic_rows = (
+            _load_generic_api_emails()
+            if source in ("generic_api", "xbovo")
+            else []
+        )
+        mailcom_rows = _load_mailcom_emails() if source == "mailcom" else []
         inserted = skipped = 0
 
         for raw in records:
@@ -2963,6 +3117,31 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
                 pool_row["note"] = pool_row.get("note") or "导入为已注册账号，用于 Codex 授权"
                 pool_row["copy_line"] = _generic_api_email_line(pool_row)
                 original_line = _generic_api_email_line(pool_row)
+            elif source == "mailcom":
+                password = clean_mailcom_password_part(raw.get("password") or "")
+                if not password:
+                    skipped += 1
+                    continue
+                pool_row = _find_by_email(mailcom_rows, email)
+                if pool_row is None:
+                    pool_row = {
+                        "id": _next_id(mailcom_rows),
+                        "email": email,
+                        "password": password,
+                        "status": "used",
+                        "used_at": now,
+                        "note": "导入为已注册账号，用于 Codex 授权",
+                        "imported_at": now,
+                    }
+                    mailcom_rows.append(pool_row)
+                else:
+                    pool_row["password"] = password or pool_row.get("password")
+                pool_row["status"] = "used"
+                pool_row["used_at"] = pool_row.get("used_at") or now
+                pool_row["completed_at"] = pool_row.get("completed_at") or now
+                pool_row["note"] = pool_row.get("note") or "导入为已注册账号，用于 Codex 授权"
+                pool_row["copy_line"] = _mailcom_email_line(pool_row)
+                original_line = _mailcom_email_line(pool_row)
             else:
                 password = (raw.get("password") or "").strip()
                 client_id = (raw.get("client_id") or raw.get("clientId") or "").strip()
@@ -3017,8 +3196,9 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
                 "updated_at": now,
                 "original_email_line": original_line,
             }
-            if source == "outlook":
+            if source in ("outlook", "mailcom"):
                 account["password"] = pool_row.get("password")
+            if source == "outlook":
                 account["client_id"] = pool_row.get("client_id")
                 account["refresh_token"] = pool_row.get("refresh_token")
             account["copy_line"] = _account_line(account)
@@ -3030,8 +3210,12 @@ def import_registered_email_accounts(records: list[dict], source: str | None) ->
                 pool_row["totp_secret"] = totp_secret
             inserted += 1
 
-        _save_outlook(outlook_rows)
-        _save_generic_api_emails(generic_rows)
+        if source == "outlook":
+            _save_outlook(outlook_rows)
+        if source in ("generic_api", "xbovo"):
+            _save_generic_api_emails(generic_rows)
+        if source == "mailcom":
+            _save_mailcom_emails(mailcom_rows)
         _save_accounts(accounts)
         return inserted, skipped
 
@@ -3390,6 +3574,143 @@ def imap_email_hosts() -> list[str]:
     with _LOCK:
         hosts = {(r.get("imap_host") or "").strip() for r in _load_imap_emails()}
         return sorted(h for h in hosts if h)
+
+
+# ============================================================
+# mail.com email pool（邮箱地址----登录密码，maildotcom-sdk mobile API）
+# ============================================================
+
+def import_mailcom_emails(records: list[dict]) -> tuple[int, int]:
+    """批量导入 mail.com 邮箱，返回 ``(新增数, 跳过数)``。"""
+    with _LOCK:
+        rows = _load_mailcom_emails()
+        inserted = skipped = 0
+        for raw in records:
+            email = clean_pool_email_part(raw.get("email") or "")
+            password = clean_mailcom_password_part(raw.get("password") or "")
+            if not email or not password:
+                skipped += 1
+                continue
+            if _find_by_email(rows, email):
+                skipped += 1
+                continue
+            row = {
+                "id": _next_id(rows),
+                "email": email,
+                "password": password,
+                "status": "available",
+                "used_at": None,
+                "note": None,
+                "imported_at": _now(),
+            }
+            row["copy_line"] = _mailcom_email_line(row)
+            rows.append(row)
+            inserted += 1
+        _save_mailcom_emails(rows)
+        return inserted, skipped
+
+
+def claim_next_mailcom_email() -> dict | None:
+    """原子领取一个可用 mail.com 邮箱并标记为 used。"""
+    with _LOCK:
+        rows = sorted(_load_mailcom_emails(), key=lambda x: int(x.get("id") or 0))
+        row = next((r for r in rows if r.get("status") == "available"), None)
+        if row is None:
+            return None
+        row["status"] = "used"
+        row["used_at"] = _now()
+        row["note"] = None
+        _save_mailcom_emails(rows)
+        return dict(row)
+
+
+def release_mailcom_email(email: str, status: str = "available", note: str | None = None) -> None:
+    with _LOCK:
+        rows = _load_mailcom_emails()
+        row = _find_by_email(rows, email)
+        if row is None:
+            return
+        row["status"] = status
+        if status == "available":
+            row["used_at"] = None
+        elif status in ("used", "failed", "disabled"):
+            row["used_at"] = row.get("used_at") or _now()
+        if note is not None:
+            row["note"] = note
+        _save_mailcom_emails(rows)
+
+
+def release_unconsumed_mailcom_email(email: str, note: str | None = None) -> bool:
+    with _LOCK:
+        if _find_by_email(_load_accounts(), email) is not None:
+            return False
+        rows = _load_mailcom_emails()
+        row = _find_by_email(rows, email)
+        if row is None or row.get("status") != "used":
+            return False
+        row["status"] = "available"
+        row["used_at"] = None
+        if note is not None:
+            row["note"] = note
+        _save_mailcom_emails(rows)
+        return True
+
+
+def delete_mailcom_email(email: str) -> bool:
+    with _LOCK:
+        rows = _load_mailcom_emails()
+        target = (email or "").lower()
+        new_rows = [r for r in rows if (r.get("email") or "").lower() != target]
+        if len(new_rows) == len(rows):
+            return False
+        _save_mailcom_emails(new_rows)
+        return True
+
+
+def list_mailcom_email_pool(status: str | None = None, limit: int = 500) -> list[dict]:
+    with _LOCK:
+        rows = _load_mailcom_emails()
+        if status:
+            rows = [r for r in rows if r.get("status") == status]
+        rows = sorted(rows, key=lambda x: int(x.get("id") or 0), reverse=True)
+        account_by_email = {
+            (row.get("email") or "").lower(): row
+            for row in _load_accounts()
+            if row.get("email")
+        }
+        return [_decorate_mailcom_email(r, account_by_email) for r in rows[:limit]]
+
+
+def mailcom_email_pool_summary() -> dict:
+    with _LOCK:
+        out = {"available": 0, "used": 0, "failed": 0}
+        for row in _load_mailcom_emails():
+            status = row.get("status") or "available"
+            out[status] = out.get(status, 0) + 1
+        out["total"] = sum(v for k, v in out.items() if k != "total")
+        return out
+
+
+def get_mailcom_email_by_email(email: str) -> dict | None:
+    with _LOCK:
+        row = _find_by_email(_load_mailcom_emails(), email)
+        return dict(row) if row else None
+
+
+def update_mailcom_email_password(email: str, password: str) -> bool:
+    """更新 mail.com 池密码，供改密流程完成后同步取信凭据。"""
+    password = clean_mailcom_password_part(password)
+    if not password:
+        return False
+    with _LOCK:
+        rows = _load_mailcom_emails()
+        row = _find_by_email(rows, email)
+        if row is None:
+            return False
+        row["password"] = password
+        row["updated_at"] = _now()
+        _save_mailcom_emails(rows)
+        return True
 
 
 # ============================================================
@@ -3880,6 +4201,7 @@ def storage_paths() -> dict:
         "logs_dir": str(_LOG_DIR),
         "generic_api_json": str(_GENERIC_API_EMAIL_JSON),
         "imap_pass_json": str(_IMAP_EMAIL_JSON),
+        "mailcom_json": str(_MAILCOM_EMAIL_JSON),
     }
 
 
@@ -3998,6 +4320,7 @@ def release_stale_claimed_emails(*, stale_seconds: int = 1800, mark: str = "avai
             (_load_generic_api_emails, _save_generic_api_emails),
             (_load_domain_pool, _save_domain_pool),
             (_load_imap_emails, _save_imap_emails),
+            (_load_mailcom_emails, _save_mailcom_emails),
         )
         now = _dt.now()
         for loader, saver in pools:
@@ -4071,9 +4394,9 @@ def delete_all_email_pool(source: str = "all") -> dict:
     ``_LOCK`` 临界区中读取，避免清理过程中任务状态发生交叉写入。
     """
     source = str(source or "all").strip().lower()
-    valid_sources = ("outlook", "generic_api", "cloudflare_domain")
+    valid_sources = ("outlook", "generic_api", "cloudflare_domain", "imap_pass", "mailcom")
     if source != "all" and source not in valid_sources:
-        raise ValueError("source 必须是 all / outlook / generic_api / cloudflare_domain")
+        raise ValueError("source 必须是 all / outlook / generic_api / cloudflare_domain / imap_pass / mailcom")
     selected_sources = list(valid_sources) if source == "all" else [source]
 
     with _LOCK:
@@ -4102,6 +4425,8 @@ def delete_all_email_pool(source: str = "all") -> dict:
             "outlook": _load_outlook,
             "generic_api": _load_generic_api_emails,
             "cloudflare_domain": _load_domain_pool,
+            "imap_pass": _load_imap_emails,
+            "mailcom": _load_mailcom_emails,
         }
         pools = {pool_source: load_pool[pool_source]() for pool_source in selected_sources}
         deleted_by_source = {name: 0 for name in valid_sources}
@@ -4133,6 +4458,8 @@ def delete_all_email_pool(source: str = "all") -> dict:
             "outlook": _save_outlook,
             "generic_api": _save_generic_api_emails,
             "cloudflare_domain": _save_domain_pool,
+            "imap_pass": _save_imap_emails,
+            "mailcom": _save_mailcom_emails,
         }
         for pool_source in selected_sources:
             kept: list[dict] = []

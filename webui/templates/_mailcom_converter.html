@@ -1,0 +1,52 @@
+<div id="tab-mailcom-converter" class="hidden">
+  <section class="mailcom-converter" aria-labelledby="mailcomConverterTitle">
+    <div class="mailcom-converter-head">
+      <div>
+        <h1 id="mailcomConverterTitle">mail.com转换</h1>
+        <p>批量提取原始资料中的邮箱与密码，转换为邮箱池可直接导入的格式。</p>
+      </div>
+      <button type="button" class="btn mailcom-converter-example" id="mailcomConverterExample">加载示例</button>
+    </div>
+
+    <div class="mailcom-converter-format" role="note">
+      <span>识别格式：<code>邮箱名...密码...名...</code></span>
+      <span aria-hidden="true">→</span>
+      <span>输出格式：<code>邮箱----密码</code></span>
+    </div>
+
+    <div class="mailcom-converter-grid">
+      <section class="mailcom-converter-panel" aria-labelledby="mailcomConverterInputLabel">
+        <div class="mailcom-converter-panel-head">
+          <h2 id="mailcomConverterInputLabel">原始数据</h2>
+          <span>行数：<strong id="mailcomConverterInputCount">0</strong></span>
+        </div>
+        <textarea id="mailcomConverterInput" spellcheck="false" placeholder="每行一条记录，例如：&#10;邮箱名user@mail.com密码password123名User"></textarea>
+        <div class="mailcom-converter-actions">
+          <button type="button" class="btn primary" id="mailcomConverterConvert">转换</button>
+          <button type="button" class="btn" id="mailcomConverterClearInput">清空输入</button>
+          <span class="mailcom-converter-shortcut">Ctrl / Cmd + Enter</span>
+        </div>
+      </section>
+
+      <section class="mailcom-converter-panel" aria-labelledby="mailcomConverterOutputLabel">
+        <div class="mailcom-converter-panel-head">
+          <h2 id="mailcomConverterOutputLabel">转换结果</h2>
+          <span>行数：<strong id="mailcomConverterOutputCount">0</strong></span>
+        </div>
+        <textarea id="mailcomConverterOutput" spellcheck="false" readonly placeholder="转换结果会显示在这里"></textarea>
+        <div class="mailcom-converter-actions">
+          <button type="button" class="btn primary" id="mailcomConverterCopy">复制有效结果</button>
+          <button type="button" class="btn" id="mailcomConverterClearOutput">清空输出</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="mailcom-converter-foot">
+      <div class="mailcom-converter-stats" aria-label="转换统计">
+        <span>成功 <strong id="mailcomConverterSuccessCount">0</strong></span>
+        <span>失败 <strong id="mailcomConverterFailureCount">0</strong></span>
+      </div>
+      <p id="mailcomConverterStatus" class="mailcom-converter-status" aria-live="polite">每行独立解析，空行会自动跳过。</p>
+    </div>
+  </section>
+</div>

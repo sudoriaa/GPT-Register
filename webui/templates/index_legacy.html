@@ -351,6 +351,7 @@
     }
     .roxy-invite-link:hover { background: #e0ebff; }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='mailcom_converter.css') }}">
 </head>
 <body>
 <header>
@@ -380,6 +381,7 @@
     <button data-tab="accounts">账号</button>
     <button data-tab="codex">Codex 授权</button>
     <button data-tab="outlook">邮箱池</button>
+    <button data-tab="mailcom-converter">mail.com转换</button>
     <button data-tab="config">配置</button>
   </div>
 </nav>
@@ -576,13 +578,15 @@
   <!-- ============ 邮箱池 ============ -->
   <div id="tab-outlook" class="hidden">
     <section class="card">
-      <div class="head"><h2>导入邮箱素材</h2><p>Outlook：邮箱----密码----clientId----refreshToken；通用API：邮箱----取码地址，也兼容邮箱---token---取码地址并自动忽略 token。默认按“已注册成功账号”导入，方便直接在账号页补跑 Codex 授权。</p></div>
+      <div class="head"><h2>导入邮箱素材</h2><p>Outlook：邮箱----密码----clientId----refreshToken；通用API：邮箱----取码地址；mail.com：邮箱地址----登录密码（mobile API 协议取信）。</p></div>
       <div class="body">
         <div id="importResult"></div>
         <label class="fld">导入类型
           <select id="importSource">
             <option value="outlook">Outlook 邮箱池</option>
             <option value="generic_api">通用 API 取码邮箱</option>
+            <option value="imap_pass">IMAP 邮箱（邮箱----密码）</option>
+            <option value="mailcom">mail.com（邮箱----登录密码）</option>
           </select>
           <span class="hint">注册来源可在配置里填多个，例如：outlook,generic_api</span>
         </label>
@@ -592,6 +596,7 @@
         </label>
         <textarea id="importText" placeholder="Outlook: email----password----clientId----refreshToken
 通用API: email----取码地址
+mail.com: email----登录密码
 兼容格式: email---token---取码地址"></textarea>
         <div style="margin-top:10px;"><button class="btn primary" id="btnImport">导入</button></div>
       </div>
@@ -604,6 +609,8 @@
               <option value="all">全部邮箱池</option>
               <option value="outlook">Outlook 邮箱池</option>
               <option value="generic_api">通用 API 邮箱池</option>
+              <option value="imap_pass">IMAP 邮箱池</option>
+              <option value="mailcom">mail.com 邮箱池</option>
               <option value="cloudflare_domain">域名邮箱池</option>
             </select>
             <input id="qOutlook" placeholder="搜索邮箱、状态…">
@@ -632,6 +639,9 @@
       <div class="pager-bar" id="pager-outlook"></div>
     </section>
   </div>
+
+  <!-- ============ mail.com转换 ============ -->
+  {% include '_mailcom_converter.html' %}
 
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
@@ -734,12 +744,23 @@ function pill(status) {
 }
 function showToast(t) { const el=$('#toast'); el.textContent=t; el.classList.add('show'); clearTimeout(showToast.t); showToast.t=setTimeout(()=>el.classList.remove('show'),1400); }
 async function copyText(text) {
-  if (!text) return;
+  if (!text) return false;
   try {
     if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
-    else { const a=document.createElement('textarea'); a.value=text; a.style.position='fixed'; a.style.opacity='0'; document.body.appendChild(a); a.select(); document.execCommand('copy'); a.remove(); }
+    else {
+      const a=document.createElement('textarea');
+      a.value=text; a.style.position='fixed'; a.style.opacity='0';
+      document.body.appendChild(a); a.select();
+      const copied = document.execCommand('copy');
+      a.remove();
+      if (!copied) throw new Error('clipboard_copy_rejected');
+    }
     showToast('已复制');
-  } catch(e) { showToast('复制失败'); }
+    return true;
+  } catch(e) {
+    showToast('复制失败');
+    return false;
+  }
 }
 async function api(url, opts) {
   const r = await fetch(url, opts);
@@ -754,7 +775,7 @@ function debounce(fn, wait=250) {
 
 // ---------- Tab 切换 ----------
 function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','config'];
+  const allowed = ['register','accounts','codex','outlook','mailcom-converter','config'];
   if (!allowed.includes(tab)) tab = 'register';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
@@ -1402,7 +1423,7 @@ function renderAccounts() {
       <td class="muted">${esc(r.created_at || '-')}</td>
       <td class="actions actions-cell">
         <div class="account-row-actions">
-          <div class="account-action-group"><button class="primary" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'}>复制Token</button> <button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button></div>
+          <div class="account-action-group"><button class="primary" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'}>复制Token</button> <button class="good" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button> <button data-account-copy-secret="registration_proxy" data-account-id="${esc(r.id)}" ${r.has_registration_proxy ? '' : 'disabled'} title="${r.has_registration_proxy ? '复制注册成功时实际使用的代理' : '该账号没有保存注册代理'}">复制代理</button></div>
           <div class="account-action-group"><button data-account-note="${esc(r.id)}" title="设置/清空该账号备注">备注</button> <button data-account-live-check="${esc(r.id)}" title="重新登录该账号，成功则刷新最新 AT/accessToken">查活</button> <button data-account-live-log="${esc(r.email)}" title="查看该账号最近一次查活日志">查活日志</button> ${_planAction(r)} ${_extractLinkAction(r)}</div>
           <div class="account-action-group">${_codexAction(r)} <button data-codex-log="${esc(r.email)}" title="查看该账号最近一次 Codex 补跑日志">补跑日志</button></div>
           <div class="account-action-group danger-zone"><button data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button> <button class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}">删除</button></div>
@@ -1538,8 +1559,14 @@ $('#accountsBody').addEventListener('click', async (e) => {
     try {
       const value = await fetchOneAccountSecret(id, field);
       if (!value) { showToast('可复制内容为空'); return; }
-      copyText(value);
-      showToast(field === 'access_token' ? 'Token 已复制' : '账号整行已复制');
+      const copied = await copyText(value);
+      if (!copied) return;
+      const copiedLabels = {
+        access_token: 'Token 已复制',
+        copy_line: '账号整行已复制',
+        registration_proxy: '注册代理已复制',
+      };
+      showToast(copiedLabels[field] || '账号内容已复制');
     } catch(err) {
       showToast('复制失败: ' + err.message);
     } finally {
@@ -2264,7 +2291,7 @@ $('#copyAllLines').addEventListener('click', async () => {
 // ---------- 邮箱池 ----------
 function poolKey(r) { return `${r.source || $('#poolSource')?.value || 'outlook'}|${r.email || ''}`; }
 function poolLabel(src) {
-  return ({outlook:'Outlook', generic_api:'通用API', cloudflare_domain:'域名邮箱'})[src] || src || '-';
+  return ({outlook:'Outlook', generic_api:'通用API', imap_pass:'IMAP', mailcom:'mail.com', cloudflare_domain:'域名邮箱'})[src] || src || '-';
 }
 async function loadOutlook() {
   try {
@@ -2335,11 +2362,15 @@ $('#qOutlook').addEventListener('input', debounce(() => { PAGERS.outlook.page = 
 $('#poolSource').addEventListener('change', () => {
   PAGERS.outlook.page = 1;
   OUTLOOK_SELECTED.clear();
-  if ($('#poolSource').value !== 'all' && $('#poolSource').value !== 'cloudflare_domain') $('#importSource').value = $('#poolSource').value;
+  if ($('#poolSource').value !== 'all' && $('#poolSource').value !== 'cloudflare_domain') {
+    $('#importSource').value = $('#poolSource').value;
+    if ($('#poolSource').value === 'mailcom') $('#importAsRegistered').checked = false;
+  }
   loadOutlook();
 });
 $('#importSource').addEventListener('change', () => {
   $('#poolSource').value = $('#importSource').value;
+  if ($('#importSource').value === 'mailcom') $('#importAsRegistered').checked = false;
   PAGERS.outlook.page = 1;
   OUTLOOK_SELECTED.clear();
   loadOutlook();
@@ -2443,6 +2474,8 @@ async function deleteAllOutlook() {
     all: '全部邮箱池',
     outlook: 'Outlook 邮箱池',
     generic_api: '通用 API 邮箱池',
+    imap_pass: 'IMAP 邮箱池',
+    mailcom: 'mail.com 邮箱池',
     cloudflare_domain: '域名邮箱池',
   })[source] || source;
   const message = `确定删除“${scopeLabel}”中的全部邮箱素材吗？\n\n此操作不受搜索条件影响，且不可撤销。正在运行任务使用的邮箱会由后端保护并保留。`;
@@ -3188,5 +3221,6 @@ jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidd
 setInterval(loadSummary, 5000);
 setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 2000);
 </script>
+<script src="{{ url_for('static', filename='mailcom_converter.js') }}"></script>
 </body>
 </html>

@@ -391,6 +391,41 @@ def _first_code(value) -> str | None:
     return m.group(1) if m else None
 
 
+def _fetch_latest_html_page_otp(
+    session: requests.Session,
+    code_url: str,
+    headers: dict,
+    after_ts: float | None = None,
+) -> tuple[str, dict] | None:
+    """
+    解析「服务端直接渲染邮件」的取件页：GET code_url（如 api798.com 的
+    /latest?email=..&auth_code=..），邮件 subject + 正文就内嵌在返回的 HTML 里。
+
+    与 youyangai 的区别：没有 /api/messages JSON 接口，/mail-api 也可能 404；
+    直接 GET 取件地址本身就能拿到邮件。验证码用通用 _extract_code 抽取。
+    """
+    try:
+        resp = session.get(
+            code_url,
+            headers={**headers, "Accept": "text/html,application/xhtml+xml,text/plain,*/*"},
+            timeout=20,
+            verify=False,
+        )
+        if resp.status_code != 200:
+            logger.debug("[GenericAPI] latest 页面 HTTP %s: %s", resp.status_code, (resp.text or "")[:160])
+            return None
+        html = resp.text or ""
+    except Exception as exc:
+        logger.debug("[GenericAPI] latest 页面读取失败: %s: %s", type(exc).__name__, exc)
+        return None
+    code = _extract_code(html)
+    if not code:
+        logger.debug("[GenericAPI] latest 页面未提取到验证码 (len=%s)", len(html))
+        return None
+    logger.info("[GenericAPI] latest 页面提取到 OTP=%s url=%s", code, code_url[:140])
+    return code, {"source": "mail_api_latest_html", "subject": "", "msg_ts": None}
+
+
 def _fetch_mail_api_otp(
     session: requests.Session,
     code_url: str,
@@ -401,6 +436,9 @@ def _fetch_mail_api_otp(
 
     顶层 code 字段是接口算好的"最新验证码"；messages[] 里每条还有 verification_code，
     按 after_ts 过滤旧码，避免拿到上一次缓存验证码。
+
+    若该站没有 /mail-api JSON 接口（如 api798.com 返回 404），回退解析取件地址本身
+    服务端渲染的邮件 HTML（_fetch_latest_html_page_otp）。
     """
     parsed = _parse_mail_api_url(code_url)
     if not parsed:
@@ -419,13 +457,13 @@ def _fetch_mail_api_otp(
         )
         if resp.status_code != 200:
             logger.debug("[GenericAPI] mail-api HTTP %s: %s", resp.status_code, (resp.text or "")[:160])
-            return None
+            return _fetch_latest_html_page_otp(session, code_url, headers, after_ts=after_ts)
         data = json.loads(resp.text or "")
     except Exception as exc:
         logger.debug("[GenericAPI] mail-api 读取失败: %s: %s", type(exc).__name__, exc)
-        return None
+        return _fetch_latest_html_page_otp(session, code_url, headers, after_ts=after_ts)
     if not isinstance(data, dict):
-        return None
+        return _fetch_latest_html_page_otp(session, code_url, headers, after_ts=after_ts)
 
     # 顶层 code：接口已算好的最新验证码
     code = _first_code(data.get("code") or data.get("verification_code") or data.get("latest_code"))
@@ -810,10 +848,10 @@ def _mail_items_mail_api(session: requests.Session, code_url: str, headers: dict
     try:
         resp = session.get(api_url, headers={**headers, "Accept": "application/json"}, timeout=20, verify=False)
         if resp.status_code != 200:
-            return []
+            return _mail_items_latest_html(session, code_url, headers)
         data = json.loads(resp.text or "")
     except Exception:
-        return []
+        return _mail_items_latest_html(session, code_url, headers)
     out = []
     for m in (data.get("messages") or []):
         if not isinstance(m, dict):
@@ -827,6 +865,33 @@ def _mail_items_mail_api(session: requests.Session, code_url: str, headers: dict
             "from": m.get("from_address") or m.get("from"),
         })
     return out
+
+
+def _mail_items_latest_html(session: requests.Session, code_url: str, headers: dict) -> list[dict]:
+    """服务端渲染邮件页（api798 类）：GET 取件地址本身，从 HTML 里取 subject + 正文。"""
+    try:
+        resp = session.get(
+            code_url,
+            headers={**headers, "Accept": "text/html,application/xhtml+xml,text/plain,*/*"},
+            timeout=20,
+            verify=False,
+        )
+        if resp.status_code != 200:
+            return []
+        html = resp.text or ""
+    except Exception:
+        return []
+    subject_m = re.search(r"<title>([^<]*)</title>", html, flags=re.IGNORECASE)
+    subject = _strip_html_fragment(subject_m.group(1) if subject_m else "")
+    text = _html_to_plain_text(html)
+    if not subject and not text:
+        return []
+    return [{
+        "subject": subject,
+        "text": f"{subject}\n{text}",
+        "received_at": "",
+        "from": "",
+    }]
 
 
 def _mail_items_xbovo(session: requests.Session, code_url: str, headers: dict, email: str = "") -> list[dict]:

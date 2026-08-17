@@ -74,7 +74,7 @@ def _wait_for_rate_slot() -> None:
 
 
 def _registration_recheck_delay() -> float:
-    return _float_setting("PLAN_CHECK_REGISTRATION_RECHECK_DELAY", 2.0, 0.0, 30.0)
+    return _float_setting("PLAN_CHECK_REGISTRATION_RECHECK_DELAY", 0.0, 0.0, 30.0)
 
 
 def _run_plan_check(

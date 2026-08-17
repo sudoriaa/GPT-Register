@@ -72,7 +72,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "REGISTER_DISABLE_OTP_FALLBACK", "file": "register.py", "type": "bool", "group": "注册方式",
-        "label": "关闭 OTP 注册兜底", "help": "开启后，走到密码页但无法设密码（登录密码页/找不到'使用密码继续'）时不再回退 OTP 注册，而是直接报错结束该任务（只要带密码的新号）",
+        "label": "关闭 OTP 注册兜底", "help": "保持关闭（默认）时，密码入口缺失、密码填写/提交异常或转场失败会自动切回邮箱验证码注册；开启后这些情况直接结束任务",
     },
 
     # ---- FAST 模式（注册提速） ----
@@ -364,7 +364,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "EMAIL_SOURCE", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
-        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,imap_pass,cloudflare_domain,cloudflare,gptmail,mailnest,cloudmail",
+        "label": "邮箱来源", "help": "可填单个或多个，逗号分隔并按顺序兜底：outlook,generic_api,imap_pass,mailcom,cloudflare_domain,cloudflare,gptmail,mailnest,cloudmail",
     },
     {
         "key": "IMAP_HOST", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
@@ -378,6 +378,29 @@ EDITABLE_FIELDS = [
     {
         "key": "IMAP_USE_SSL", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
         "label": "IMAP 使用 SSL", "help": "开=IMAP4_SSL（993），关=明文（143）",
+    },
+    {
+        "key": "MAILCOM_NODE_BIN", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "mail.com Node 路径", "help": "maildotcom-sdk 使用 Node.js 20+；留空时从 PATH 自动查找 node",
+        "storage": "env",
+    },
+    {
+        "key": "MAILCOM_SESSION_DIR", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "mail.com Session 目录", "help": "SDK 登录态缓存目录；留空使用项目 run/mailcom_sessions",
+        "storage": "env",
+    },
+    {
+        "key": "MAILCOM_PROXY", "file": "email.py", "type": "str", "group": "邮箱 / OTP",
+        "label": "mail.com 请求代理", "help": "OAuth 登录及取信代理；留空优先复用 PROXY_PRE_PROXY，再用全局 PROXY；支持 HTTP/SOCKS",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "MAILCOM_REQUEST_TIMEOUT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "mail.com 请求超时(秒)", "help": "单次 SDK 登录或拉信的最长等待时间，默认 60",
+    },
+    {
+        "key": "MAILCOM_MESSAGE_LIMIT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "mail.com 每箱取信数", "help": "每个文件夹读取的最近邮件数，范围 1-100，默认 25",
     },
     {
         "key": "WEBUI_ALLOW_LOGIN", "file": "email.py", "type": "bool", "group": "邮箱 / OTP",
@@ -530,7 +553,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PLAN_CHECK_PROXY_MODE", "file": "proxy.py", "type": "str", "group": "代理池",
-        "label": "套餐/Agent网络模式", "help": "用于查套餐和生成 Agent Token；auto=本地代理可用则走代理、未监听则直连；proxy=强制代理；direct=强制直连",
+        "label": "套餐/Agent网络模式", "help": "用于查套餐和生成 Agent Token；auto=优先系统代理、再用专用代理/代理池；proxy=强制代理；direct=强制直连",
     },
     {
         "key": "PLAN_CHECK_PROXY", "file": "proxy.py", "type": "str", "group": "代理池",
@@ -539,19 +562,19 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PLAN_CHECK_TIMEOUT", "file": "proxy.py", "type": "float", "group": "代理池",
-        "label": "套餐/Agent超时(秒)", "help": "查套餐和生成 Agent Token 的单次请求超时，建议 10-20 秒；独立于注册请求超时",
+        "label": "套餐/Agent超时(秒)", "help": "查套餐和生成 Agent Token 的单次请求超时，默认 8 秒；独立于注册请求超时",
     },
     {
         "key": "PLAN_CHECK_MAX_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理池",
-        "label": "套餐/Agent最大尝试次数", "help": "查套餐遇到超时等临时错误时会切换未使用过的代理，总尝试次数最多 3 次",
+        "label": "套餐最大尝试次数", "help": "查套餐遇到超时等临时错误时切换路径；默认 2 次，硬上限 4 次",
     },
     {
         "key": "PLAN_CHECK_RETRY_DELAY", "file": "proxy.py", "type": "float", "group": "代理池",
-        "label": "套餐/Agent重试间隔(秒)", "help": "查套餐和生成 Agent Token 的重试间隔，按尝试次数递增；服务端 Retry-After 优先",
+        "label": "套餐重试间隔(秒)", "help": "查套餐切换路径前的等待时间，默认 0.5 秒并按尝试次数递增；服务端 Retry-After 优先",
     },
     {
         "key": "PLAN_CHECK_REGISTRATION_RECHECK_DELAY", "file": "proxy.py", "type": "float", "group": "代理池",
-        "label": "新账号资格复查延迟(秒)", "help": "新注册 free 账号未发现试用资格或首次查询失败时复查一次；0 表示关闭",
+        "label": "新账号资格复查延迟(秒)", "help": "新注册 free 账号首次成功查询但未发现试用资格时复查一次；默认 0 表示关闭",
     },
     {
         "key": "PLAN_CHECK_WORKERS", "file": "proxy.py", "type": "int", "group": "代理池",

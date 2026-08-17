@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-Outlook 邮箱账号池配置。
-
-注册邮箱与 OTP 均只走 Outlook 账号池：
-    1. 把邮箱素材写入项目根目录 `用于注册的邮箱.txt`
-    2. 每行格式：email====password====clientId====refreshToken
-    3. 运行注册时会自动导入新增邮箱
-"""
+"""邮箱来源、账号池与 OTP 轮询配置。"""
 from config.env_loader import env_str, env_bool, apply_env_overrides
 
 
@@ -20,6 +13,7 @@ USE_EMAIL_SERVICE = False
 #   "cloudflare" — Cloudflare Worker 临时邮箱（cloudflare_temp_email），API 创建并取码
 #   "generic_api"       — 通用 API 取码邮箱池（邮箱----取码地址）
 #   "imap_pass"         — 标准 IMAP 邮箱（邮箱----密码），如 Roundcube 后端，IMAP 直连取信
+#   "mailcom"           — mail.com 邮箱池（邮箱地址----登录密码），mobile API 协议取信
 #   "xbovo"             — xbovo iCloud Hide My Email API（邮箱----alias_xxx；与 generic_api 同池）
 #   "gptmail"           — GPTMail 临时邮箱 API（运行时随机生成邮箱并自动收码）
 #   "mailnest"          — MailNest/迈巢临时邮箱 API（运行时购买邮箱并自动收码）
@@ -70,6 +64,28 @@ IMAP_USE_SSL = False
 
 # 收件文件夹（默认 INBOX）
 IMAP_FOLDER = "INBOX"
+
+
+# ============================================================
+# mail.com 邮箱模式（maildotcom-sdk mobile API）
+# EMAIL_SOURCE 含 "mailcom" 时启用。导入格式：邮箱地址----登录密码
+# ============================================================
+
+# Node.js 20+ 可执行文件；留空自动从 PATH 查找 node。
+MAILCOM_NODE_BIN = env_str("MAILCOM_NODE_BIN", "")
+
+# SDK token session 缓存目录；留空使用项目 run/mailcom_sessions。
+MAILCOM_SESSION_DIR = env_str("MAILCOM_SESSION_DIR", "")
+
+# mail.com OAuth/取信代理；留空时优先复用 PROXY_PRE_PROXY，再用全局 PROXY。
+MAILCOM_PROXY = env_str("MAILCOM_PROXY", "")
+
+# 单次 SDK 登录/拉信最长等待，以及每个文件夹读取的最近邮件数。
+MAILCOM_REQUEST_TIMEOUT = 60
+MAILCOM_MESSAGE_LIMIT = 25
+
+# 预留的注册前 mail.com 改密开关，默认关闭。
+MAILCOM_CHANGE_PASSWORD_BEFORE_REGISTER = False
 
 # 号池邮箱被 OpenAI 识别为"已有账号"（二手/已注册号）时的处理策略：
 #   0（默认，注册模式）→ 快速标死换下一个号，避免白等 OTP 90s
@@ -173,4 +189,4 @@ CLOUDMAIL_AUTO_ADD_USER = True
 CLOUDMAIL_RANDOM_LOCAL_LENGTH = 12
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'USE_EMAIL_SERVICE': 'bool', 'OTP_MAX_WAIT': 'int', 'OTP_POLL_INTERVAL': 'int', 'EMAIL_SOURCE': 'str', 'EMAIL_DOMAIN': 'str', 'QQ_EMAIL': 'str', 'QQ_IMAP_PASSWORD': 'str', 'GPTMAIL_API_KEY': 'str', 'OUTLOOK_FETCH_MODE': 'str', 'MAIL_NEST_API_KEY': 'str', 'MAIL_NEST_PROJECT_CODE': 'str', 'CLOUDFLARE_API_BASE': 'str', 'CLOUDFLARE_API_KEY': 'str', 'CLOUDFLARE_AUTH_MODE': 'str', 'CLOUDFLARE_CUSTOM_AUTH': 'str', 'CLOUDFLARE_PATH_DOMAINS': 'str', 'CLOUDFLARE_PATH_ACCOUNTS': 'str', 'CLOUDFLARE_PATH_TOKEN': 'str', 'CLOUDFLARE_PATH_MESSAGES': 'str', 'CLOUDFLARE_DEFAULT_DOMAINS': 'list_str_multiline', 'CLOUDFLARE_REQUEST_TIMEOUT': 'int', 'CLOUDFLARE_NAME_LENGTH': 'int', 'CLOUDMAIL_API_BASE': 'str', 'CLOUDMAIL_ADMIN_EMAIL': 'str', 'CLOUDMAIL_PASSWORD': 'str', 'CLOUDMAIL_TOKEN_PATH': 'str', 'CLOUDMAIL_AUTH_TOKEN': 'str', 'CLOUDMAIL_DOMAINS': 'list_str_multiline', 'CLOUDMAIL_AUTO_ADD_USER': 'bool', 'CLOUDMAIL_RANDOM_LOCAL_LENGTH': 'int', 'IMAP_HOST': 'str', 'IMAP_PORT': 'int', 'IMAP_USE_SSL': 'bool', 'IMAP_FOLDER': 'str', 'WEBUI_ALLOW_LOGIN': 'bool'})
+apply_env_overrides(globals(), {'USE_EMAIL_SERVICE': 'bool', 'OTP_MAX_WAIT': 'int', 'OTP_POLL_INTERVAL': 'int', 'EMAIL_SOURCE': 'str', 'EMAIL_DOMAIN': 'str', 'QQ_EMAIL': 'str', 'QQ_IMAP_PASSWORD': 'str', 'GPTMAIL_API_KEY': 'str', 'OUTLOOK_FETCH_MODE': 'str', 'MAIL_NEST_API_KEY': 'str', 'MAIL_NEST_PROJECT_CODE': 'str', 'CLOUDFLARE_API_BASE': 'str', 'CLOUDFLARE_API_KEY': 'str', 'CLOUDFLARE_AUTH_MODE': 'str', 'CLOUDFLARE_CUSTOM_AUTH': 'str', 'CLOUDFLARE_PATH_DOMAINS': 'str', 'CLOUDFLARE_PATH_ACCOUNTS': 'str', 'CLOUDFLARE_PATH_TOKEN': 'str', 'CLOUDFLARE_PATH_MESSAGES': 'str', 'CLOUDFLARE_DEFAULT_DOMAINS': 'list_str_multiline', 'CLOUDFLARE_REQUEST_TIMEOUT': 'int', 'CLOUDFLARE_NAME_LENGTH': 'int', 'CLOUDMAIL_API_BASE': 'str', 'CLOUDMAIL_ADMIN_EMAIL': 'str', 'CLOUDMAIL_PASSWORD': 'str', 'CLOUDMAIL_TOKEN_PATH': 'str', 'CLOUDMAIL_AUTH_TOKEN': 'str', 'CLOUDMAIL_DOMAINS': 'list_str_multiline', 'CLOUDMAIL_AUTO_ADD_USER': 'bool', 'CLOUDMAIL_RANDOM_LOCAL_LENGTH': 'int', 'IMAP_HOST': 'str', 'IMAP_PORT': 'int', 'IMAP_USE_SSL': 'bool', 'IMAP_FOLDER': 'str', 'MAILCOM_NODE_BIN': 'str', 'MAILCOM_SESSION_DIR': 'str', 'MAILCOM_PROXY': 'str', 'MAILCOM_REQUEST_TIMEOUT': 'int', 'MAILCOM_MESSAGE_LIMIT': 'int', 'MAILCOM_CHANGE_PASSWORD_BEFORE_REGISTER': 'bool', 'WEBUI_ALLOW_LOGIN': 'bool'})

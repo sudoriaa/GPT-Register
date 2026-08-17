@@ -1,0 +1,14 @@
+{
+  "name": "gpt-register-mail-bridge",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "https-proxy-agent": "7.0.6",
+    "maildotcom-sdk": "1.0.9",
+    "node-fetch": "3.3.2",
+    "socks-proxy-agent": "8.0.5"
+  }
+}

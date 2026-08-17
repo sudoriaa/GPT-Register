@@ -1081,15 +1081,6 @@
     .accounts-table-v2 .account-attr-chip.is-plan-plus {
       color: #98680b; background: #fff6dc; border-color: #e8c36b;
     }
-    .accounts-table-v2 .account-attr-chip.is-subscription-renewing {
-      color: #1f6f5d; background: #e8f8f3; border-color: #91d7c5;
-    }
-    .accounts-table-v2 .account-attr-chip.is-subscription-cancel-scheduled {
-      color: #946719; background: #fff5df; border-color: #e8bd6c;
-    }
-    .accounts-table-v2 .account-attr-chip.is-subscription-unknown {
-      color: #7b8491; background: #f3f4f6; border-color: #d8dce2;
-    }
     .accounts-table-v2 .account-focus-cell {
       text-align: center; vertical-align: middle;
     }
@@ -2120,6 +2111,7 @@
     }
 
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='mailcom_converter.css') }}">
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -2160,6 +2152,12 @@
         <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/>
       </svg>
       <span class="sidebar-item-label">邮箱池</span>
+    </button>
+    <button type="button" data-tab="mailcom-converter" class="sidebar-item">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/><path d="M18 7l-3 3"/><path d="M6 17l3-3"/>
+      </svg>
+      <span class="sidebar-item-label">mail.com转换</span>
     </button>
     <button type="button" data-tab="config" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2346,7 +2344,7 @@
       <div class="jobs-toolbar-v2" id="accountsToolbarV2">
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">检测与补跑</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="刷新选中账号的套餐、Plus 试用、订阅及 Token 等可查询状态">查套餐</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnCheckSelectedPlansV2" disabled title="刷新选中账号的套餐、Plus 试用及 Token 等可查询状态">查套餐</button>
           <button type="button" class="jobs-tb-btn jobs-tb-btn--danger account-subscription-cancel" id="btnCancelSelectedSubscriptionsV2" disabled title="检查并取消选中账号下个周期的自动续费；当前套餐权益通常保留到本周期结束">一键取消套餐</button>
           <label class="acc-v2-inline subscription-cancel-workers" title="本次取消套餐任务的并发数（1-20）">销套餐并发
             <input id="subscriptionCancelConcurrencyV2" type="number" min="1" max="20" value="2" inputmode="numeric">
@@ -2499,6 +2497,7 @@
             <button type="button" class="outlook-v2-select-item" data-value="outlook" role="option">Outlook 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="imap_pass" role="option">IMAP 邮箱池</button>
+            <button type="button" class="outlook-v2-select-item" data-value="mailcom" role="option">mail.com 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="cloudflare_domain" role="option">域名邮箱池</button>
           </div>
           <input type="hidden" id="poolSourceV2" value="all">
@@ -2547,6 +2546,9 @@
       <div class="jobs-v2-pager" id="pager-outlook-v2"></div>
     </section>
   </div>
+
+  <!-- ============ mail.com转换 ============ -->
+  {% include '_mailcom_converter.html' %}
 
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
@@ -2623,7 +2625,7 @@
     <div class="outlook-import-head">
       <div class="outlook-import-head-main">
         <h3 id="outlookImportTitle">导入邮箱素材</h3>
-        <p>Outlook：邮箱----密码----clientId----refreshToken；通用 API：邮箱----取码地址，也兼容邮箱---token---取码地址并自动忽略 token；IMAP：邮箱----密码（标准 IMAP 直连取信）；xbovo：邮箱----alias_xxx（iCloud API Key）。默认按「已注册成功账号」导入，方便在账号页补跑 Codex。</p>
+        <p>Outlook：邮箱----密码----clientId----refreshToken；通用 API：邮箱----取码地址；mail.com：邮箱地址----登录密码（mobile API 协议取信）；IMAP：邮箱----密码；xbovo：邮箱----alias_xxx。默认按「已注册成功账号」导入，mail.com 选择后默认导入可用邮箱池。</p>
       </div>
       <button type="button" class="outlook-import-close" id="btnCloseOutlookImport" aria-label="关闭">×</button>
     </div>
@@ -2637,6 +2639,7 @@
             <button type="button" class="outlook-v2-select-item is-active" data-value="outlook" role="option">Outlook 邮箱池</button>
             <button type="button" class="outlook-v2-select-item" data-value="generic_api" role="option">通用 API 取码邮箱</button>
             <button type="button" class="outlook-v2-select-item" data-value="imap_pass" role="option">IMAP 邮箱（邮箱----密码）</button>
+            <button type="button" class="outlook-v2-select-item" data-value="mailcom" role="option">mail.com（邮箱----登录密码）</button>
             <button type="button" class="outlook-v2-select-item" data-value="xbovo" role="option">xbovo（iCloud API）</button>
           </div>
           <input type="hidden" id="importSourceV2" value="outlook">
@@ -2654,7 +2657,7 @@
       </label>
       <label class="outlook-import-field">
         <span>邮箱素材</span>
-        <textarea id="importTextV2" placeholder="Outlook: email----password----clientId----refreshToken&#10;通用API: email----取码地址&#10;兼容格式: email---token---取码地址&#10;IMAP: email----密码 或 email----密码----服务商地址&#10;xbovo: email----alias_xxx"></textarea>
+        <textarea id="importTextV2" placeholder="Outlook: email----password----clientId----refreshToken&#10;通用API: email----取码地址&#10;mail.com: email----登录密码&#10;IMAP: email----密码 或 email----密码----服务商地址&#10;xbovo: email----alias_xxx"></textarea>
       </label>
     </div>
     <div class="outlook-import-foot">
@@ -2903,12 +2906,23 @@ function jobsV2OpIcons() {
 }
 function showToast(t) { const el=$('#toast'); el.textContent=t; el.classList.add('show'); clearTimeout(showToast.t); showToast.t=setTimeout(()=>el.classList.remove('show'),1400); }
 async function copyText(text) {
-  if (!text) return;
+  if (!text) return false;
   try {
     if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
-    else { const a=document.createElement('textarea'); a.value=text; a.style.position='fixed'; a.style.opacity='0'; document.body.appendChild(a); a.select(); document.execCommand('copy'); a.remove(); }
+    else {
+      const a=document.createElement('textarea');
+      a.value=text; a.style.position='fixed'; a.style.opacity='0';
+      document.body.appendChild(a); a.select();
+      const copied = document.execCommand('copy');
+      a.remove();
+      if (!copied) throw new Error('clipboard_copy_rejected');
+    }
     showToast('已复制');
-  } catch(e) { showToast('复制失败'); }
+    return true;
+  } catch(e) {
+    showToast('复制失败');
+    return false;
+  }
 }
 async function api(url, opts) {
   const r = await fetch(url, opts);
@@ -2923,7 +2937,7 @@ function debounce(fn, wait=250) {
 
 // ---------- Tab 切换 ----------
 function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','config'];
+  const allowed = ['register','accounts','codex','outlook','mailcom-converter','config'];
   if (!allowed.includes(tab)) tab = 'register';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
@@ -3501,7 +3515,7 @@ function updatePlanCheckBatchUi(batch) {
     btn.disabled = true;
     btn.setAttribute('aria-busy', 'true');
     btn.textContent = `查询 ${completed}/${batch.total}${failed ? ` · 失败 ${failed}` : ''}`;
-    btn.title = `正在刷新套餐、订阅、Token 等可查询状态；已完成 ${completed}/${batch.total}`;
+    btn.title = `正在刷新套餐、Plus 试用及 Token 等可查询状态；已完成 ${completed}/${batch.total}`;
   }
 }
 function planCheckStatusUrl(ids) {
@@ -3917,15 +3931,30 @@ function positionAccountsV2MoreMenu(wrap) {
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
 }
-function _accountAttributeChip(label, present, detail = '', title = '', toneClass = '') {
+function _accountAttributeCopyHint(label) {
+  return ({AT:'AT', RT:'OpenAI RT', '2FA':'2FA 密钥', '密码':'ChatGPT 密码', '取码URL':'取码 URL'})[label] || label;
+}
+function _accountAttributeChip(label, present, detail = '', title = '', toneClass = '', copyField = '', accountId = '') {
   const value = String(detail || '').trim();
   const text = `${present ? '✓' : '×'} ${label}${value ? `·${value}` : ''}`;
   const classes = `account-attr-chip ${present ? 'is-present' : 'is-absent'}${toneClass ? ` ${toneClass}` : ''}`;
-  return `<span class="${classes}"${title ? ` title="${attrEsc(title)}"` : ''}>${esc(text)}</span>`;
+  const copyable = Boolean(copyField && accountId !== '' && accountId != null);
+  const copyHint = copyable ? `点击复制${_accountAttributeCopyHint(label)}` : '';
+  const effectiveTitle = [title, copyHint].filter(Boolean).join('；');
+  if (copyable) {
+    return `<button type="button" class="${classes}" data-account-copy-secret="${attrEsc(copyField)}" data-account-id="${attrEsc(accountId)}" title="${attrEsc(effectiveTitle)}" aria-label="${attrEsc(copyHint)}">${esc(text)}</button>`;
+  }
+  return `<span class="${classes}"${effectiveTitle ? ` title="${attrEsc(effectiveTitle)}"` : ''}>${esc(text)}</span>`;
 }
-function _accountUnknownAttributeChip(label, title = '', detail = '未知') {
+function _accountUnknownAttributeChip(label, title = '', detail = '未知', copyField = '', accountId = '') {
   const value = String(detail || '未知').trim();
-  return `<span class="account-attr-chip is-unknown"${title ? ` title="${attrEsc(title)}"` : ''}>${esc(`? ${label}·${value}`)}</span>`;
+  const copyable = Boolean(copyField && accountId !== '' && accountId != null);
+  const copyHint = copyable ? `点击复制${_accountAttributeCopyHint(label)}` : '';
+  const effectiveTitle = [title, copyHint].filter(Boolean).join('；');
+  if (copyable) {
+    return `<button type="button" class="account-attr-chip is-unknown" data-account-copy-secret="${attrEsc(copyField)}" data-account-id="${attrEsc(accountId)}" title="${attrEsc(effectiveTitle)}" aria-label="${attrEsc(copyHint)}">${esc(`? ${label}·${value}`)}</button>`;
+  }
+  return `<span class="account-attr-chip is-unknown"${effectiveTitle ? ` title="${attrEsc(effectiveTitle)}"` : ''}>${esc(`? ${label}·${value}`)}</span>`;
 }
 function _accountPlanCheckFailed(r) {
   const status = String(r.plan_check_status || '').trim().toLowerCase();
@@ -3982,63 +4011,13 @@ function _accountPlanAttribute(r) {
     : normalized.includes('plus') ? 'is-plan-plus' : '';
   return _accountAttributeChip('套餐', true, displayPlan, `当前套餐：${plan}`, toneClass);
 }
-function _accountSubscriptionAttribute(r) {
+function _accountSubscriptionCancelAttribute(r) {
   const cancelStatus = String(r.subscription_cancel_status || '').trim().toLowerCase();
   const cancelling = r.subscription_cancel_loading === true || r.cancelling === true ||
     ['queued', 'running', 'pending'].includes(cancelStatus);
-  if (cancelling) {
-    const label = cancelStatus === 'queued' ? '排队中' : '取消中';
-    return `<span class="account-attr-chip account-subscription-loading" title="取消自动续费${attrEsc(label)}">${esc(`订阅·${label}`)}</span>`;
-  }
-  if (_accountPlanCheckFailed(r)) {
-    return _accountUnknownAttributeChip('订阅', _accountPlanCheckFailureTitle(r));
-  }
-  const explicit = String(r.subscription_status || r.subscription_renewal_status || '')
-    .trim().toLowerCase().replace(/[\s-]+/g, '_');
-  const willRenewRaw = r.last_will_renew !== undefined ? r.last_will_renew : r.will_renew;
-  const willRenew = willRenewRaw === true || String(willRenewRaw).toLowerCase() === 'true'
-    ? true
-    : willRenewRaw === false || String(willRenewRaw).toLowerCase() === 'false' ? false : null;
-  const activeRaw = r.has_active_subscription;
-  const active = activeRaw === true || String(activeRaw).toLowerCase() === 'true'
-    ? true
-    : activeRaw === false || String(activeRaw).toLowerCase() === 'false' ? false : null;
-  const cancelsAt = r.subscription_cancels_at || r.plan_cancels_at || r.cancels_at || '';
-  const renewsAt = r.subscription_renews_at || r.plan_renews_at || r.renews_at || '';
-  const origin = r.purchase_origin_platform || r.last_purchase_origin_platform || '';
-
-  let state = 'unknown';
-  if (['renewing', 'active_renewing', 'will_renew'].includes(explicit)) {
-    state = 'renewing';
-  } else if (['cancel_scheduled', 'cancelled_at_period_end', 'canceled_at_period_end', 'active_nonrenewing', 'nonrenewing', 'non_renewing'].includes(explicit)) {
-    state = 'cancel_scheduled';
-  } else if (['none', 'inactive', 'expired', 'cancelled', 'canceled', 'no_subscription'].includes(explicit)) {
-    state = 'none';
-  } else if (active === false) {
-    state = 'none';
-  } else if (active === true && (willRenew === false || Boolean(cancelsAt))) {
-    state = 'cancel_scheduled';
-  } else if (active === true && willRenew === true) {
-    state = 'renewing';
-  }
-
-  const titleParts = [];
-  if (state === 'renewing') titleParts.push('已订阅套餐，当前会自动续费');
-  else if (state === 'cancel_scheduled') titleParts.push('已预约取消自动续费，当前套餐通常保留到本周期结束');
-  else if (state === 'none') titleParts.push('未检测到有效订阅');
-  else titleParts.push('尚未查询或无法确认订阅续费状态');
-  if (renewsAt) titleParts.push('续费时间：' + renewsAt);
-  if (cancelsAt) titleParts.push('取消生效时间：' + cancelsAt);
-  if (origin) titleParts.push('订阅来源：' + origin);
-
-  const view = {
-    renewing: ['✓', '续费中', 'is-present is-subscription-renewing'],
-    cancel_scheduled: ['✓', '预约取消', 'is-present is-subscription-cancel-scheduled'],
-    none: ['×', '无订阅', 'is-absent'],
-    unknown: ['?', '未知', 'is-subscription-unknown'],
-  }[state];
-  return '<span class="account-attr-chip ' + view[2] + '" title="' + attrEsc(titleParts.join('；')) + '">' +
-    esc(view[0] + ' 订阅·' + view[1]) + '</span>';
+  if (!cancelling) return '';
+  const label = cancelStatus === 'queued' ? '排队中' : '取消中';
+  return `<span class="account-attr-chip account-subscription-loading" title="取消套餐${attrEsc(label)}">${esc(`销套餐·${label}`)}</span>`;
 }
 function _accountOaicsAttribute(r) {
   let status = String(r.oaics_status || '').trim().toLowerCase();
@@ -4071,21 +4050,21 @@ function _accountAttributeChips(r) {
     ? (String(r.access_token_status_reason || r.plan_check_error || '').trim() || '查套餐时确认 AT 已失效，请执行验活刷新')
     : '';
   const atChip = atInvalid
-    ? _accountAttributeChip('AT', false, '失效', atTitle)
+    ? _accountAttributeChip('AT', false, '失效', atTitle, '', r.has_access_token ? 'access_token' : '', r.id)
     : remoteUnknown
-      ? _accountUnknownAttributeChip('AT', unknownTitle)
-      : _accountAttributeChip('AT', Boolean(r.has_access_token));
+      ? _accountUnknownAttributeChip('AT', unknownTitle, '未知', r.has_access_token ? 'access_token' : '', r.id)
+      : _accountAttributeChip('AT', Boolean(r.has_access_token), '', '', '', r.has_access_token ? 'access_token' : '', r.id);
   const rtChip = remoteUnknown
-    ? _accountUnknownAttributeChip('RT', unknownTitle)
-    : _accountAttributeChip('RT', Boolean(r.has_refresh_token), '', r.codex_status === 'retrying' ? 'OpenAI RT 正在补跑' : '来自 Codex/OpenAI OAuth 凭证');
+    ? _accountUnknownAttributeChip('RT', unknownTitle, '未知', r.has_refresh_token ? 'codex_refresh_token' : '', r.id)
+    : _accountAttributeChip('RT', Boolean(r.has_refresh_token), '', r.codex_status === 'retrying' ? 'OpenAI RT 正在补跑' : '来自 Codex/OpenAI OAuth 凭证', '', r.has_refresh_token ? 'codex_refresh_token' : '', r.id);
   return [
     atChip,
     rtChip,
     _accountOaicsAttribute(r),
-    _accountSubscriptionAttribute(r),
-    _accountAttributeChip('2FA', Boolean(r.totp_enabled)),
-    _accountAttributeChip('密码', Boolean(r.has_chatgpt_password)),
-    _accountAttributeChip('取码URL', Boolean(r.has_pickup_url)),
+    _accountSubscriptionCancelAttribute(r),
+    _accountAttributeChip('2FA', Boolean(r.totp_enabled), '', '', '', r.totp_enabled ? 'totp_secret' : '', r.id),
+    _accountAttributeChip('密码', Boolean(r.has_chatgpt_password), '', '', '', r.has_chatgpt_password ? 'chatgpt_password' : '', r.id),
+    _accountAttributeChip('取码URL', Boolean(r.has_pickup_url), '', '', '', r.has_pickup_url ? 'pickup_url' : '', r.id),
   ].join('');
 }
 function renderAccounts() {
@@ -4125,6 +4104,7 @@ function renderAccounts() {
         <div class="account-quick-actions">
           <button type="button" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'} title="${r.has_access_token ? '复制这个账号的完整 AT' : '该账号没有 AT'}">复制AT</button>
           <button type="button" data-account-copy-secret="pickup_url" data-account-id="${esc(r.id)}" ${r.has_pickup_url ? '' : 'disabled'} title="${r.has_pickup_url ? '复制这个账号邮箱的取码 URL' : '该账号没有取码 URL'}">复制取码</button>
+          <button type="button" data-account-copy-secret="registration_proxy" data-account-id="${esc(r.id)}" ${r.has_registration_proxy ? '' : 'disabled'} title="${r.has_registration_proxy ? '复制注册成功时实际使用的代理' : '该账号没有保存注册代理'}">复制代理</button>
           <button type="button" data-account-subscription-log="${esc(r.id)}" data-email="${attrEsc(r.email || '')}" title="查看这个账号最近一次取消套餐的步骤日志">销套餐日志</button>
           <button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${attrEsc(r.email || '')}" title="删除这个账号">删除</button>
         </div>
@@ -4377,10 +4357,14 @@ async function onAccountsBodyClick(e) {
     try {
       const value = await fetchOneAccountSecret(id, field);
       if (!value) { showToast('可复制内容为空'); return; }
-      copyText(value);
+      const copied = await copyText(value);
+      if (!copied) return;
       const copiedLabels = {
         access_token: 'AT 已复制',
+        codex_refresh_token: 'OpenAI RT 已复制',
+        totp_secret: '2FA 密钥已复制',
         pickup_url: '取码 URL 已复制',
+        registration_proxy: '注册代理已复制',
         chatgpt_password: 'ChatGPT 密码已复制',
         delivery_line: '发货行已复制',
         free_line: 'FREE 行已复制',
@@ -5131,7 +5115,7 @@ function _normalizeSubscriptionCancelResults(payload, requestedIds) {
   return requestedIds.map(id => ({
     id,
     status: 'unknown',
-    message: '请求已完成，后端未返回逐账号明细，请以刷新后的订阅状态为准',
+    message: '请求已完成，后端未返回逐账号明细，请查看销套餐日志',
   }));
 }
 
@@ -5792,6 +5776,7 @@ const POOL_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 邮箱池',
   imap_pass: 'IMAP 邮箱池',
+  mailcom: 'mail.com 邮箱池',
   cloudflare_domain: '域名邮箱池',
 };
 function setPoolSourceV2(val) {
@@ -5833,7 +5818,7 @@ function setPoolTokenV2(val) {
 }
 function poolKey(r) { return `${r.source || getPoolSource() || 'outlook'}|${r.email || ''}`; }
 function poolLabel(src) {
-  return ({outlook:'Outlook', generic_api:'通用API', imap_pass:'IMAP', cloudflare_domain:'域名邮箱'})[src] || src || '-';
+  return ({outlook:'Outlook', generic_api:'通用API', imap_pass:'IMAP', mailcom:'mail.com', cloudflare_domain:'域名邮箱'})[src] || src || '-';
 }
 async function loadOutlook() {
   try {
@@ -5950,7 +5935,7 @@ function onPoolSourceChange(el) {
   PAGERS.outlook.page = 1;
   OUTLOOK_SELECTED.clear();
   const val = el ? el.value : getPoolSource();
-  if (val === 'outlook' || val === 'generic_api' || val === 'imap_pass') setImportSourceV2(val);
+  if (val === 'outlook' || val === 'generic_api' || val === 'imap_pass' || val === 'mailcom') setImportSourceV2(val);
   loadOutlook();
 }
 function syncOutlookSelectAll(checked) {
@@ -6202,6 +6187,7 @@ const IMPORT_SOURCE_LABELS = {
   outlook: 'Outlook 邮箱池',
   generic_api: '通用 API 取码邮箱',
   imap_pass: 'IMAP 邮箱（邮箱----密码）',
+  mailcom: 'mail.com（邮箱----登录密码）',
   xbovo: 'xbovo（iCloud API）',
 };
 function setImportSourceV2(val) {
@@ -6220,6 +6206,8 @@ function setImportSourceV2(val) {
   // imap_pass 时显示"服务商地址"输入框
   const hostWrap = document.getElementById('importImapHostWrap');
   if (hostWrap) hostWrap.style.display = next === 'imap_pass' ? '' : 'none';
+  const asRegistered = document.getElementById('importAsRegisteredV2');
+  if (asRegistered && next === 'mailcom') asRegistered.checked = false;
 }
 function openOutlookImportModal() {
   const modal = $('#outlookImportModal');
@@ -6227,7 +6215,7 @@ function openOutlookImportModal() {
   const result = $('#importResultV2');
   if (result) result.innerHTML = '';
   const pool = getPoolSource();
-  if (pool === 'outlook' || pool === 'generic_api') setImportSourceV2(pool);
+  if (pool === 'outlook' || pool === 'generic_api' || pool === 'imap_pass' || pool === 'mailcom') setImportSourceV2(pool);
   else setImportSourceV2('outlook');
   modal.classList.remove('hidden');
   updateModalScrollLock();
@@ -7663,5 +7651,6 @@ jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidd
 setInterval(loadSummary, 5000);
 setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 2000);
 </script>
+<script src="{{ url_for('static', filename='mailcom_converter.js') }}"></script>
 </body>
 </html>

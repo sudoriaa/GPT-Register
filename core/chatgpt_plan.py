@@ -184,7 +184,7 @@ def _system_proxy_route(system_proxy: str, *, mode: str) -> dict:
         "proxy_mode": mode,
         "network_route": "proxy",
         "proxy_used": _mask_proxy(system_proxy) or None,
-        "proxy_fallback_reason": "configured proxies unavailable; using system proxy",
+        "proxy_fallback_reason": "using available system proxy",
         "proxy_pre_proxy": None,
         "proxy_source": "system",
         "_disable_pre_proxy": True,
@@ -281,12 +281,17 @@ def _plan_check_routes(explicit_proxy: Optional[str], max_attempts: int) -> list
         return [resolve_plan_check_route(explicit_proxy)]
 
     system_proxy = _system_proxy_url() if explicit_value is None else ""
-    try:
-        first_route = resolve_plan_check_route(explicit_proxy)
-    except ValueError:
-        if not system_proxy:
-            raise
+    # auto 模式优先走当前系统代理。这个出口已经被桌面环境实际使用，
+    # 比随机住宅代理更适合作为短时套餐查询的第一条路径。
+    if mode == "auto" and system_proxy:
         first_route = _system_proxy_route(system_proxy, mode=mode)
+    else:
+        try:
+            first_route = resolve_plan_check_route(explicit_proxy)
+        except ValueError:
+            if not system_proxy:
+                raise
+            first_route = _system_proxy_route(system_proxy, mode=mode)
     if (
         system_proxy
         and not str(first_route.get("proxy") or "").strip()
@@ -1048,7 +1053,12 @@ def cancel_account_subscription_protocol(
                 pass
 
 
-def parse_accounts_check(data: dict, *, token: str = "") -> dict:
+def parse_accounts_check(
+    data: dict,
+    *,
+    token: str = "",
+    include_subscription: bool = True,
+) -> dict:
     """从 accounts/check 响应提取套餐和 Plus 试用资格。"""
     claims = token_claims(token) if token else {}
     claim_account_id = claims.get("account_id")
@@ -1102,23 +1112,16 @@ def parse_accounts_check(data: dict, *, token: str = "") -> dict:
         "account_user_role": account.get("account_user_role"),
         "current_plan_type": plan_type,
         "subscription_plan": subscription_plan,
-        "subscription_id": subscription_id,
-        "has_active_subscription": has_active_subscription,
-        "is_active_subscription_gratis": is_active_subscription_gratis,
         "expires_at": entitlement.get("expires_at"),
         "renews_at": entitlement.get("renews_at"),
-        "cancels_at": entitlement.get("cancels_at"),
         "billing_period": entitlement.get("billing_period"),
         "billing_currency": entitlement.get("billing_currency"),
-        "is_delinquent": bool(entitlement.get("is_delinquent")),
         "discount_type": (entitlement.get("discount") or {}).get("discount_type"),
         "discount_amount": (entitlement.get("discount") or {}).get("amount"),
         "discount_duration_num_periods": (entitlement.get("discount") or {}).get("duration_num_periods"),
         "discount_expires_at": (entitlement.get("discount") or {}).get("discount_expires_at"),
         "discount_cancellation_policy": (entitlement.get("discount") or {}).get("cancellation_policy"),
         "discount_promo_campaign_id": (entitlement.get("discount") or {}).get("promo_campaign_id"),
-        "last_purchase_origin_platform": last_sub.get("purchase_origin_platform"),
-        "last_will_renew": last_will_renew,
         "plus_trial_eligible": plus_trial_eligible,
         "plus_trial_campaign_id": (plus_campaign or {}).get("id"),
         "plus_trial_title": plus_meta.get("title"),
@@ -1132,7 +1135,17 @@ def parse_accounts_check(data: dict, *, token: str = "") -> dict:
         "can_access_with_session": bool(item.get("can_access_with_session")),
         "raw_account_plan_type": account.get("plan_type"),
     }
-    result["subscription_status"] = classify_subscription_status(result)
+    if include_subscription:
+        result.update({
+            "subscription_id": subscription_id,
+            "has_active_subscription": has_active_subscription,
+            "is_active_subscription_gratis": is_active_subscription_gratis,
+            "cancels_at": entitlement.get("cancels_at"),
+            "is_delinquent": bool(entitlement.get("is_delinquent")),
+            "last_purchase_origin_platform": last_sub.get("purchase_origin_platform"),
+            "last_will_renew": last_will_renew,
+        })
+        result["subscription_status"] = classify_subscription_status(result)
     result.update({k: v for k, v in claims.items() if k != "payload" and v is not None})
     return result
 
@@ -1144,16 +1157,14 @@ def _plan_check_settings(
 ) -> tuple[float, int, float]:
     from config import proxy as proxy_cfg
 
-    timeout_value = timeout if timeout is not None else getattr(proxy_cfg, "PLAN_CHECK_TIMEOUT", 15.0)
-    # The global proxy policy is authoritative.  Older .env files may still
-    # contain PLAN_CHECK_MAX_ATTEMPTS=3; do not let that legacy per-feature
-    # value silently reduce the requested four-route retry budget.
+    timeout_value = timeout if timeout is not None else getattr(proxy_cfg, "PLAN_CHECK_TIMEOUT", 8.0)
+    # 套餐查询使用自己的短重试预算，避免继承注册等长任务的全局代理重试次数。
     attempts_value = max_attempts if max_attempts is not None else getattr(
-        proxy_cfg, "PROXY_RETRY_MAX_ATTEMPTS", 4
+        proxy_cfg, "PLAN_CHECK_MAX_ATTEMPTS", 2
     )
-    delay_value = retry_delay if retry_delay is not None else getattr(proxy_cfg, "PLAN_CHECK_RETRY_DELAY", 1.5)
+    delay_value = retry_delay if retry_delay is not None else getattr(proxy_cfg, "PLAN_CHECK_RETRY_DELAY", 0.5)
     return (
-        max(1.0, min(60.0, float(timeout_value or 15.0))),
+        max(1.0, min(60.0, float(timeout_value or 8.0))),
         max(1, min(4, int(attempts_value or 1))),
         max(0.0, min(30.0, float(delay_value or 0.0))),
     )
@@ -1163,6 +1174,45 @@ def _retryable_plan_error(http_status: int | None) -> bool:
     if http_status is None:
         return True
     return http_status in {408, 409, 425, 429} or http_status >= 500
+
+
+def _terminal_invalid_at_result(
+    response: Any,
+    *,
+    claims: dict,
+    attempt: int,
+    max_attempts: int,
+    request_timeout: float,
+    route_meta: dict,
+    secrets: tuple[str, ...],
+) -> dict:
+    """Build the terminal result for an account endpoint HTTP 401."""
+    failure_fields = _http_failure_fields(
+        response,
+        phase="query",
+        label="套餐查询",
+        secrets=secrets,
+    )
+    detail = str(failure_fields.get("response_preview") or "")
+    error = "AT失效（HTTP 401），请手动查活刷新"
+    if detail:
+        error = f"{error}: {detail}"
+    return {
+        "ok": False,
+        "checked_at": now_iso(),
+        "protocol": "protocol",
+        **{k: v for k, v in claims.items() if k != "payload"},
+        **failure_fields,
+        "reason": "token_expired",
+        "error": error,
+        "retryable": False,
+        "token_expired": True,
+        "needs_live_check": True,
+        "attempt_count": attempt,
+        "max_attempts": max_attempts,
+        "request_timeout": request_timeout,
+        **route_meta,
+    }
 
 
 def _is_plan_timeout_exception(exc: BaseException) -> bool:
@@ -1191,6 +1241,7 @@ def check_account_plan(
     timeout: float | None = None,
     max_attempts: int | None = None,
     retry_delay: float | None = None,
+    include_subscription: bool = False,
 ) -> dict:
     token = normalize_token(token)
     if not token:
@@ -1267,6 +1318,18 @@ def check_account_plan(
             http_status = int(resp.status_code)
             if not (200 <= http_status < 300):
                 is_auth_expired = http_status == 401
+                if is_auth_expired:
+                    # 401 belongs to the account AT, not to the selected route.
+                    # Return immediately so this task never rotates to another proxy.
+                    return _terminal_invalid_at_result(
+                        resp,
+                        claims=claims,
+                        attempt=attempt,
+                        max_attempts=effective_attempts,
+                        request_timeout=timeout_seconds,
+                        route_meta=route_meta,
+                        secrets=secrets,
+                    )
                 is_timeout = http_status in {408, 504, 524}
                 failure_fields = _http_failure_fields(
                     resp,
@@ -1279,22 +1342,15 @@ def check_account_plan(
                     "checked_at": now_iso(),
                     "protocol": "protocol",
                     "reason": (
-                        "token_expired"
-                        if is_auth_expired
-                        else "protocol_timeout"
+                        "protocol_timeout"
                         if is_timeout
                         else "protocol_check_failed"
                     ),
                     **failure_fields,
                     "retryable": _retryable_plan_error(http_status),
-                    "token_expired": True if is_auth_expired else claims.get("token_expired"),
-                    "needs_live_check": True if is_auth_expired else False,
+                    "token_expired": claims.get("token_expired"),
+                    "needs_live_check": False,
                 }
-                if is_auth_expired:
-                    detail = str(failure_fields.get("response_preview") or "")
-                    last_result["error"] = "AT已过期/失效，请手动查活刷新"
-                    if detail:
-                        last_result["error"] = f"{last_result['error']}: {detail}"
             else:
                 phase = "query_parse"
                 try:
@@ -1313,7 +1369,11 @@ def check_account_plan(
                         "retryable": True,
                     }
                 else:
-                    parsed = parse_accounts_check(data, token=token)
+                    parsed = parse_accounts_check(
+                        data,
+                        token=token,
+                        include_subscription=include_subscription,
+                    )
                     parsed["protocol"] = "protocol"
                     parsed["phase"] = "query"
                     parsed["http_status"] = http_status
@@ -1326,7 +1386,26 @@ def check_account_plan(
         except Exception as exc:
             safe_error = _safe_exception_detail(exc, secrets=secrets)
             logger.debug("套餐查询失败: %s", safe_error)
-            preview = _safe_response_preview(resp, secrets=secrets) if resp is not None else ""
+            failure_response = resp if resp is not None else getattr(exc, "response", None)
+            failure_status = None
+            if failure_response is not None:
+                try:
+                    failure_status = int(getattr(failure_response, "status_code", 0) or 0) or None
+                except (TypeError, ValueError):
+                    failure_status = None
+            if failure_status == 401:
+                # Some HTTP clients raise status errors instead of returning the
+                # response. Treat the attached 401 exactly like a normal 401.
+                return _terminal_invalid_at_result(
+                    failure_response,
+                    claims=claims,
+                    attempt=attempt,
+                    max_attempts=effective_attempts,
+                    request_timeout=timeout_seconds,
+                    route_meta=route_meta,
+                    secrets=secrets,
+                )
+            preview = _safe_response_preview(failure_response, secrets=secrets) if failure_response is not None else ""
             is_timeout = _is_plan_timeout_exception(exc)
             last_result = {
                 "ok": False,
@@ -1334,7 +1413,7 @@ def check_account_plan(
                 "protocol": "protocol",
                 "phase": phase,
                 "reason": "protocol_timeout" if is_timeout else "protocol_exception",
-                "http_status": int(resp.status_code) if resp is not None and getattr(resp, "status_code", None) else None,
+                "http_status": failure_status,
                 "error": safe_error,
                 **({"response_preview": preview} if preview else {}),
                 "retryable": True,

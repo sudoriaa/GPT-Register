@@ -1709,12 +1709,14 @@ def _read_chatgpt_session_via_page(page, timeout_ms: int = 5000) -> dict | None:
         return {"_error": f"{type(exc).__name__}: {exc}"}
 
 def _fetch_chatgpt_session(page, context=None, timeout: int = 120) -> dict:
-    # 优先用 BrowserContext.request 读取 cookies/session，避免 page.evaluate 在 Browser Use 远端 target 上挂死。
+    """只读等待登录会话，不主动导航页面。
+
+    优先用 BrowserContext.request 读取 cookies/session，避免 page.evaluate 在 Browser Use
+    远端 target 上挂死。页面尚未自动进入 chatgpt.com 时保持原节点，避免打断 OAuth/资料页。
+    """
     timeout = min(timeout, 28) if _fast_mode() else timeout
     end = time.time() + timeout
     last = None
-    proactive_opened = False
-    first_not_chatgpt_at: float | None = None
     last_log = 0.0
     target_closed_count = 0
 
@@ -1771,31 +1773,8 @@ def _fetch_chatgpt_session(page, context=None, timeout: int = 120) -> dict:
                 logger.info("[BrowserUse] 等待 accessToken via=page，url=%s keys=%s", _page_url(page) or "-", keys)
                 last_log = time.time()
         else:
-            # 仍在 auth about-you/profile 时不能主动跳 chatgpt.com，否则资料未提交会拿不到 accessToken。
-            if any(x in url for x in ("about-you", "profile", "create-account/about", "signup/profile")):
-                if time.time() - last_log > 2:
-                    logger.info("[BrowserUse] 仍在资料页，等待提交跳转，不主动打开 chatgpt.com：url=%s", _page_url(page) or "-")
-                    last_log = time.time()
-                time.sleep(0.4 if _fast_mode() else 1.0)
-                continue
-            if first_not_chatgpt_at is None:
-                first_not_chatgpt_at = time.time()
-            wait_before_open = 2.0 if _fast_mode() else 8.0
-            if page is not None and _fast_mode() and not proactive_opened and time.time() - first_not_chatgpt_at >= wait_before_open:
-                logger.info("[BrowserUse] 未快速自动跳转 chatgpt.com，主动打开首页读取 session：current=%s", _page_url(page) or "-")
-                try:
-                    page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=_timeout_ms(getattr(_cfg, "BROWSER_USE_NAVIGATION_TIMEOUT", 90)))
-                    proactive_opened = True
-                    _bu_delay("navigate")
-                    continue
-                except Exception as exc:
-                    last = f"goto_chatgpt_failed {type(exc).__name__}: {exc}"
-                    if _is_target_closed_error(exc):
-                        target_closed_count += 1
-                        if context is None or _pick_live_page(context) is None:
-                            raise RuntimeError(f"BrowserUse 页面已关闭，无法主动打开 ChatGPT：{last}")
             if time.time() - last_log > 2:
-                logger.info("[BrowserUse] 等待进入 chatgpt.com 或登录态同步：url=%s", _page_url(page) or "-")
+                logger.info("[BrowserUse] 等待页面自动进入 chatgpt.com 或登录态同步：url=%s", _page_url(page) or "-")
                 last_log = time.time()
 
         time.sleep(0.45 if _fast_mode() else 2)
@@ -2340,7 +2319,8 @@ def run_browser_use_registration(
                     context=context,
                     timeout=28 if _fast_mode() else 120,
                 ),
-                stage_url="https://chatgpt.com/",
+                # session 阶段只观察 OAuth 自动跳转；恢复器也不得主动重进首页。
+                stage_url=None,
             )
             _t_profile.done()
             access_token = session_info.get("accessToken")

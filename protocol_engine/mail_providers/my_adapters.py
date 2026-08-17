@@ -4,6 +4,7 @@
 每个 kind 对应本项目 `config.email.EMAIL_SOURCE` 的一个来源：
     generic_api / xbovo        → core.generic_api_mail_client（邮箱----取码地址）
     outlook                    → core.outlook_client（remote + Graph 双模）
+    mailcom                    → core.mailcom_client（maildotcom-sdk mobile API）
     cloudflare_domain          → core.qqmail_client（CF 域名 → QQ IMAP）
     cloudflare                 → core.cf_temp_mail_client（CF Worker 临时邮箱）
     gptmail / mailnest / cloudmail → 对应临时邮箱客户端（运行时生成地址）
@@ -141,6 +142,22 @@ class ImapPassMailProvider(_MyProjectProvider):
         return fetch_latest_otp(email, after_ts=after_ts, max_wait=max_wait)
 
 
+@register
+class MailcomMailProvider(_MyProjectProvider):
+    """mail.com 邮箱池（邮箱地址----登录密码，mobile API 协议取信）。"""
+
+    kind = "mailcom"
+    display_name = "mail.com邮箱(协议取信)"
+    pooled = True
+    ephemeral = False
+    accepts_existing_account = False
+
+    @staticmethod
+    def fetch_fn(email, after_ts, max_wait):
+        from core.mailcom_client import fetch_latest_otp
+        return fetch_latest_otp(email, after_ts=after_ts, max_wait=max_wait)
+
+
 # ════════════════════════════════════════════════════════════
 #  ephemeral 来源（运行时生成地址，但任务系统已领好）
 # ════════════════════════════════════════════════════════════
@@ -223,6 +240,7 @@ SOURCE_TO_KIND = {
     "xbovo": "generic_api",
     "outlook": "my_outlook",
     "imap_pass": "imap_pass",
+    "mailcom": "mailcom",
     "cloudflare_domain": "cloudflare_domain",
     "cloudflare": "cloudflare",
     "gptmail": "gptmail",
