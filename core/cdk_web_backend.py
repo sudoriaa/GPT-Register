@@ -85,11 +85,12 @@ def queue_settings() -> dict:
     return {"workers": _WORKERS, "queue_limit": _QUEUE_LIMIT}
 
 
-def _new_client(visitor_id: str = "") -> CdkWebClient:
+def _new_client(visitor_id: str = "", cookies: dict | None = None) -> CdkWebClient:
     return CdkWebClient(
         str(_setting("CDK_WEB_BASE_URL", DEFAULT_BASE_URL) or DEFAULT_BASE_URL),
         password=str(_setting("CDK_WEB_WORKBENCH_PASSWORD", "") or ""),
         visitor_id=visitor_id,
+        cookies=cookies or {},
         timeout=float(_int("CDK_WEB_REQUEST_TIMEOUT", 30, 5, 300)),
     )
 
@@ -189,6 +190,23 @@ def _safe_payment_result(payload: dict) -> dict:
     return {key: source.get(key) for key in allowed if source.get(key) not in (None, "")}
 
 
+def _payment_success(account_id: int, task_id: str, snapshot: dict, *, attempt: int, max_attempts: int, country: str, proxy_source: str, message: str) -> dict:
+    safe = _safe_payment_result(snapshot)
+    final = {
+        "ok": True, "status": "success", "attempt": attempt,
+        "max_attempts": max_attempts, "protocol_job_id": task_id,
+        "country": country, "proxy_source": proxy_source,
+        "backend": "cdk_web", "result": safe,
+        "settlement_status": safe.get("settlement_status"),
+        "redirect_status": safe.get("redirect_status"),
+        "payment_action": safe.get("payment_action"),
+        "message": message,
+        "checked_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    db.update_account_paypal_payment(account_id, final)
+    return final
+
+
 def _wait_payment(client: CdkWebClient, task_id: str, account_id: int, attempt: int, max_attempts: int) -> dict:
     deadline = time.monotonic() + _int("CDK_WEB_PAYMENT_TIMEOUT", 900, 30, 3600)
     interval = _int("CDK_WEB_PAYMENT_POLL_INTERVAL", 2, 1, 30)
@@ -250,29 +268,18 @@ def _run_payment(*, account_id: int, client: CdkWebClient, source_task_id: str, 
                 "backend": "cdk_web", "message": "CDK网页协议支付运行中",
             })
             snapshot = _wait_payment(client, payment_id, account_id, attempt, max_attempts)
-            safe = _safe_payment_result(snapshot)
-            final = {
-                "ok": True, "status": "success", "attempt": attempt,
-                "max_attempts": max_attempts, "protocol_job_id": payment_id,
-                "country": country, "proxy_source": proxy_source,
-                "backend": "cdk_web", "result": safe,
-                "settlement_status": safe.get("settlement_status"),
-                "redirect_status": safe.get("redirect_status"),
-                "payment_action": safe.get("payment_action"),
-                "message": "CDK网页协议支付成功",
-                "checked_at": datetime.now().isoformat(timespec="seconds"),
-            }
-            db.update_account_paypal_payment(account_id, final)
-            return final
+            return _payment_success(
+                account_id, payment_id, snapshot,
+                attempt=attempt, max_attempts=max_attempts,
+                country=country, proxy_source=proxy_source,
+                message="CDK网页协议支付成功",
+            )
         except Exception as exc:
             last_error = _redact(exc, proxy)
-            if payment_id:
-                try:
-                    client.cancel_protocol_payment(payment_id)
-                except Exception:
-                    pass
-            # Keep an awaiting-OTP/CAPTCHA record available for manual retry.
             code = str(getattr(exc, "code", "") or "").lower()
+            # Keep an awaiting-OTP/CAPTCHA task alive.  The remote workbench
+            # owns the waiting state; cancelling here would make the manual
+            # submit endpoint reject the value and lose the task session.
             if code in {"awaiting_otp", "awaiting_captcha", "manual", "needs_intervention"}:
                 final = {
                     "ok": False, "status": "failed", "attempt": attempt,
@@ -285,6 +292,11 @@ def _run_payment(*, account_id: int, client: CdkWebClient, source_task_id: str, 
                 }
                 db.update_account_paypal_payment(account_id, final)
                 return final
+            if payment_id:
+                try:
+                    client.cancel_protocol_payment(payment_id)
+                except Exception:
+                    pass
             db.update_account_paypal_payment(account_id, {
                 "ok": False, "status": "running" if attempt < max_attempts else "failed",
                 "attempt": attempt, "max_attempts": max_attempts,
@@ -352,6 +364,7 @@ def run_extract(*, account_id: int, email: str, access_token: str, trigger: str,
                 db.update_account_extract(account_id, {
                     "ok": False, "status": "running", "job_id": task_id,
                     "link_type": "paypal", "backend": "cdk_web", "visitor_id": client.visitor_id,
+                    "session_state": client.session_state(),
                     "cdk_remaining": _remaining(session), "proxy_source": proxy_source,
                     "message": "CDK网页提链任务运行中",
                 })
@@ -362,6 +375,7 @@ def run_extract(*, account_id: int, email: str, access_token: str, trigger: str,
                     callback=lambda item: db.update_account_extract(account_id, {
                         "ok": False, "status": "running", "job_id": task_id,
                         "backend": "cdk_web", "visitor_id": client.visitor_id,
+                        "session_state": client.session_state(),
                         "message": str(item.get("stage") or item.get("message") or item.get("status") or "任务运行中")[:500],
                     }),
                     raise_on_failure=True,
@@ -371,6 +385,7 @@ def run_extract(*, account_id: int, email: str, access_token: str, trigger: str,
                 final = {
                     "ok": True, "status": "success", "job_id": task_id,
                     "link_type": "paypal", "backend": "cdk_web", "visitor_id": client.visitor_id,
+                    "session_state": client.session_state(),
                     "cdk_remaining": _remaining(session), "proxy_source": proxy_source,
                     "result": result, "message": "CDK网页提链成功",
                     "checked_at": datetime.now().isoformat(timespec="seconds"),
@@ -476,6 +491,35 @@ def _visitor_from_account(account: dict) -> str:
     return str(payload.get("visitor_id") or "").strip() if isinstance(payload, dict) else ""
 
 
+def _session_from_account(account: dict) -> tuple[str, dict[str, str]]:
+    """Restore the private CDK visitor/cookie session for a payment resume."""
+    visitor = ""
+    cookies: dict[str, str] = {}
+    raw = str(account.get("extract_link_cdk_session_json") or "").strip()
+    if raw:
+        try:
+            state = json.loads(raw)
+        except (TypeError, ValueError):
+            state = {}
+        if isinstance(state, dict):
+            visitor = str(state.get("visitor_id") or state.get("visitor") or "").strip()[:128]
+            raw_cookies = state.get("cookies")
+            if isinstance(raw_cookies, dict):
+                for name, value in raw_cookies.items():
+                    name_text = str(name or "").strip()[:80]
+                    value_text = str(value or "").strip()[:512]
+                    if name_text and value_text:
+                        cookies[name_text] = value_text
+    if not visitor:
+        visitor = _visitor_from_account(account)
+    # Older rows only stored the stable visitor header.  The workbench uses
+    # the same value for opl_visitor, so this fallback keeps a resumed task
+    # bound to its original session after a process restart.
+    if visitor and "opl_visitor" not in cookies:
+        cookies["opl_visitor"] = visitor
+    return visitor, cookies
+
+
 def enqueue_payment(*, account_id: int, trigger: str = "manual", proxy: str | None = None, country: str | None = None) -> dict:
     account = db.get_account(int(account_id)) or {}
     if not account:
@@ -492,11 +536,11 @@ def enqueue_payment(*, account_id: int, trigger: str = "manual", proxy: str | No
         return {"accepted": False, "busy": False, "error": "没有可用 CDK 支付代理"}
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "error": "CDK 网页队列已满"}
-    visitor = _visitor_from_account(account)
+    visitor, cookies = _session_from_account(account)
 
     def worker():
         try:
-            client = _new_client(visitor)
+            client = _new_client(visitor, cookies)
             try:
                 return _run_payment(account_id=int(account_id), client=client, source_task_id=source_task_id, proxy=selected, proxy_source=source, trigger=trigger)
             finally:
@@ -508,18 +552,117 @@ def enqueue_payment(*, account_id: int, trigger: str = "manual", proxy: str | No
     return {"accepted": True, "busy": False, "future": future, "backend": "cdk_web", "country": str(country or _setting("CDK_WEB_PROTOCOL_COUNTRY", "GB")).upper(), "proxy_source": source}
 
 
+def _resume_payment(*, account_id: int, client: CdkWebClient, task_id: str, proxy: str, proxy_source: str) -> dict:
+    """Continue polling a remote payment task after manual OTP/CAPTCHA input."""
+    account = db.get_account(int(account_id)) or {}
+    try:
+        attempt = max(1, int(account.get("paypal_payment_attempt") or 1))
+    except (TypeError, ValueError):
+        attempt = 1
+    try:
+        max_attempts = max(1, int(account.get("paypal_payment_max_attempts") or 0))
+    except (TypeError, ValueError):
+        max_attempts = 0
+    if not max_attempts:
+        max_attempts = _int("CDK_WEB_MAX_RETRIES", 2, 0, 20) + 1
+    country = str(account.get("paypal_payment_country") or _setting("CDK_WEB_PROTOCOL_COUNTRY", "GB") or "GB").upper()
+    db.update_account_paypal_payment(account_id, {
+        "ok": False, "status": "running", "attempt": attempt,
+        "max_attempts": max_attempts, "protocol_job_id": task_id,
+        "country": country, "proxy_source": proxy_source,
+        "backend": "cdk_web", "message": "人工值已提交，恢复 CDK 网页协议支付轮询",
+    })
+    try:
+        snapshot = _wait_payment(client, task_id, account_id, attempt, max_attempts)
+        return _payment_success(
+            account_id, task_id, snapshot,
+            attempt=attempt, max_attempts=max_attempts,
+            country=country, proxy_source=proxy_source,
+            message="CDK网页协议支付成功",
+        )
+    except Exception as exc:
+        code = str(getattr(exc, "code", "") or "").lower()
+        error = _redact(exc, proxy)
+        if code in {"awaiting_otp", "awaiting_captcha", "manual", "needs_intervention"}:
+            final = {
+                "ok": False, "status": "failed", "attempt": attempt,
+                "max_attempts": max_attempts, "protocol_job_id": task_id,
+                "country": country, "proxy_source": proxy_source,
+                "backend": "cdk_web", "payment_action": code,
+                "error": error, "message": "仍等待人工验证码/验证，可继续提交",
+                "result": {"manual_stage": code},
+                "checked_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        else:
+            final = {
+                "ok": False, "status": "failed", "attempt": attempt,
+                "max_attempts": max_attempts, "protocol_job_id": task_id,
+                "country": country, "proxy_source": proxy_source,
+                "backend": "cdk_web", "error": error, "message": error,
+                "checked_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        db.update_account_paypal_payment(account_id, final)
+        return final
+
+
 def submit_intervention(*, account_id: int, value: str, kind: str = "otp") -> dict:
     account = db.get_account(int(account_id)) or {}
     if not account:
         raise ValueError("账号不存在")
+    kind = str(kind or "otp").strip().lower()
+    if kind not in {"otp", "captcha"}:
+        raise ValueError("人工提交类型仅支持 otp/captcha")
+    value = str(value or "").strip()
+    if not value:
+        raise ValueError("验证码/验证结果不能为空")
     task_id = str(account.get("paypal_payment_protocol_job_id") or "").strip()
     if not task_id:
         raise ValueError("账号没有等待人工处理的协议支付任务")
-    client = _new_client(_visitor_from_account(account))
+    visitor, cookies = _session_from_account(account)
+    # The original payment task already carries its checkout proxy on the
+    # workbench.  Manual OTP/CAPTCHA submission only touches that existing
+    # task, so it remains resumable even if a process restart temporarily
+    # leaves no local proxy setting.  Use the saved source for redaction/UI.
     try:
-        return client.submit_captcha(task_id, value) if str(kind).lower() == "captcha" else client.submit_otp(task_id, value)
-    finally:
-        client.close()
+        proxy, proxy_source = _proxy(int(account_id), None)
+    except Exception:
+        proxy = ""
+        proxy_source = str(account.get("paypal_payment_proxy_source") or "none").strip().lower() or "none"
+    if not _QUEUE_SLOTS.acquire(blocking=False):
+        raise ValueError("CDK 网页队列已满")
+    client = None
+    try:
+        client = _new_client(visitor, cookies)
+        submitted = client.submit_captcha(task_id, value) if kind == "captcha" else client.submit_otp(task_id, value)
+        db.update_account_paypal_payment(account_id, {
+            "ok": False, "status": "running", "attempt": account.get("paypal_payment_attempt") or 1,
+            "max_attempts": account.get("paypal_payment_max_attempts") or (_int("CDK_WEB_MAX_RETRIES", 2, 0, 20) + 1),
+            "protocol_job_id": task_id, "proxy_source": proxy_source, "backend": "cdk_web",
+            "message": "人工值已提交，正在恢复协议支付",
+        })
+        def resume_worker():
+            try:
+                return _resume_payment(
+                    account_id=int(account_id), client=client, task_id=task_id,
+                    proxy=proxy, proxy_source=proxy_source,
+                )
+            finally:
+                client.close()
+                _QUEUE_SLOTS.release()
+
+        future = _EXECUTOR.submit(resume_worker)
+        return {
+            "accepted": True,
+            "status": str(submitted.get("status") or "running") if isinstance(submitted, dict) else "running",
+            "protocol_job_id": task_id,
+            "kind": kind,
+            "future": future,
+        }
+    except Exception:
+        _QUEUE_SLOTS.release()
+        if client is not None:
+            client.close()
+        raise
 
 
 __all__ = ["enabled", "public_settings", "queue_settings", "enqueue_extract", "enqueue_payment", "submit_intervention", "run_extract"]

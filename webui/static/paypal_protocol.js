@@ -114,6 +114,38 @@
     return String(item.payment_status || item.paypal_payment_status || item.protocol_payment_status || item.pay_status || '').trim().toLowerCase();
   }
 
+  // CDK 网页协议支付在需要人工介入时会把动作单独写入
+  // paypal_payment_action（部分旧接口使用 payment_action）。动作值只用于
+  // 决定控件类型，不把任务 ID、返回结果或输入值放进 DOM 属性。
+  function itemPaymentAction(item) {
+    return String(valueFrom(item, ['paypal_payment_action', 'payment_action']) || '')
+      .trim().toLowerCase().replace(/[\s-]+/g, '_');
+  }
+
+  function isCdkPayment(item) {
+    const paymentBackend = String(valueFrom(item, ['paypal_payment_backend', 'payment_backend']) || '').trim().toLowerCase();
+    if (paymentBackend) return paymentBackend === 'cdk_web' || paymentBackend.includes('cdk');
+    const extractBackend = String(valueFrom(item, ['extract_link_backend']) || '').trim().toLowerCase();
+    return !extractBackend || extractBackend === 'cdk_web' || extractBackend.includes('cdk');
+  }
+
+  function paymentIntervention(item) {
+    if (!isCdkPayment(item)) return null;
+    const action = itemPaymentAction(item);
+    if (!['awaiting_otp', 'awaiting_captcha', 'manual', 'needs_intervention'].includes(action)) return null;
+
+    // manual/needs_intervention 表示服务端没有进一步区分阶段；给操作员
+    // 一个明确的下拉选择，固定阶段则只显示对应提交方式。
+    let kind = action === 'awaiting_captcha' ? 'captcha' : 'otp';
+    if (['manual', 'needs_intervention'].includes(action)) {
+      const context = String(valueFrom(item, [
+        'paypal_payment_message', 'payment_message', 'paypal_payment_error', 'payment_error',
+      ]) || '').toLowerCase();
+      if (context.includes('captcha') || context.includes('人机') || context.includes('验证结果')) kind = 'captcha';
+    }
+    return { action, kind, generic: action === 'manual' || action === 'needs_intervention' };
+  }
+
   function itemAccountId(item) {
     const value = item.account_id != null ? item.account_id : (item.account && item.account.id != null ? item.account.id : item.id);
     return value == null ? '' : String(value);
@@ -204,6 +236,11 @@
 
   function paymentStatusView(item) {
     const status = itemPaymentStatus(item);
+    const intervention = paymentIntervention(item);
+    if (intervention) {
+      const label = intervention.kind === 'captcha' ? '等待人工验证' : '等待验证码';
+      return `<span class="paypal-protocol-pill paypal-protocol-status-running">${html(label)}</span>`;
+    }
     const labels = {
       queued: '排队中', pending: '待支付', waiting: '待支付', running: '支付中', processing: '支付中',
       success: '支付成功', succeeded: '支付成功', completed: '支付成功', paid: '支付成功',
@@ -315,6 +352,23 @@
     }).join('')}</div>`;
   }
 
+  function renderIntervention(item, index) {
+    const intervention = paymentIntervention(item);
+    const accountId = itemAccountId(item);
+    if (!intervention || !accountId) return '';
+    const fixedKind = intervention.kind;
+    const label = fixedKind === 'captcha' ? '验证结果' : '验证码';
+    const autocomplete = fixedKind === 'otp' ? 'one-time-code' : 'off';
+    const selector = intervention.generic
+      ? `<select class="paypal-protocol-intervention-kind" data-paypal-intervention-kind aria-label="人工处理类型"><option value="otp"${fixedKind === 'otp' ? ' selected' : ''}>验证码（OTP）</option><option value="captcha"${fixedKind === 'captcha' ? ' selected' : ''}>验证结果（CAPTCHA）</option></select>`
+      : `<input type="hidden" data-paypal-intervention-kind value="${fixedKind}">`;
+    return `<form class="paypal-protocol-intervention" data-paypal-intervention-form data-paypal-intervention-index="${index}" data-paypal-intervention-action="${html(intervention.action)}">
+      <div class="paypal-protocol-intervention-head"><span>需人工处理</span><small>${html(intervention.action === 'awaiting_captcha' ? '等待验证结果' : intervention.action === 'awaiting_otp' ? '等待邮箱验证码' : '可手动提交')}</small></div>
+      <div class="paypal-protocol-intervention-controls">${selector}<input type="password" class="paypal-protocol-intervention-input" data-paypal-intervention-input autocomplete="${autocomplete}" inputmode="${fixedKind === 'otp' ? 'numeric' : 'text'}" placeholder="输入${label}" aria-label="输入${label}" spellcheck="false" required><button type="submit" class="primary" data-paypal-intervention-submit>提交</button></div>
+      <small class="paypal-protocol-intervention-hint" data-paypal-intervention-hint>提交后将恢复并继续当前支付任务</small>
+    </form>`;
+  }
+
   function visibleItems() {
     return state.items.filter((item) => itemBucket(item) === state.bucket);
   }
@@ -342,7 +396,7 @@
     // The PP协议 link is valid for 60 minutes.  Keep expired extraction
     // records visible for manual re-extraction, but do not offer a payment
     // action that the backend will necessarily reject.
-    return !isPaymentSuccess(item) && !isExpired(item) && !paymentBusy(item)
+    return !isPaymentSuccess(item) && !isExpired(item) && !paymentBusy(item) && !paymentIntervention(item)
       && (itemBucket(item) === 'extract_success_payment_failed' || Boolean(itemLink(item)));
   }
 
@@ -666,12 +720,12 @@
         <td>${linkHtml}</td>
         <td>${countdown}</td>
         <td title="${html(completed)}">${html(formatDate(completed))}</td>
-        <td><div class="paypal-protocol-row-actions">
+        <td class="paypal-col-actions"><div class="paypal-protocol-row-actions">
           ${link && !expired ? `<button type="button" class="good" data-paypal-copy-index="${index}">复制链接</button>` : ''}
           ${qr && !expired && /^https?:\/\//i.test(qr) ? `<button type="button" data-paypal-qr-index="${index}">二维码</button>` : ''}
           ${payAllowed ? `<button type="button" class="primary" data-paypal-pay-index="${index}">${itemPaymentStatus(item) === 'failed' ? '重新支付' : '协议支付'}</button>` : ''}
           <button type="button" data-paypal-extract="${html(accountId)}"${extractBusy || !accountId ? ' disabled' : ''}>${extractActionLabel}</button>
-        </div></td>
+        </div>${renderIntervention(item, index)}</td>
       </tr>`;
     }).join('');
     renderSelection();
@@ -949,6 +1003,51 @@
     }
   }
 
+  async function submitIntervention(form) {
+    if (!form || form.dataset.paypalSubmitting === '1') return;
+    const index = Number(form.dataset.paypalInterventionIndex);
+    const item = visibleItems()[index];
+    const accountId = item && itemAccountId(item);
+    const input = form.querySelector('[data-paypal-intervention-input]');
+    const kindControl = form.querySelector('[data-paypal-intervention-kind]');
+    const value = String(input && input.value || '').trim();
+    const kind = String(kindControl && kindControl.value || form.dataset.paypalInterventionKind || 'otp').toLowerCase() === 'captcha' ? 'captcha' : 'otp';
+    if (!accountId) return notify('账号信息已变化，请刷新后重试');
+    if (!value) {
+      notify(kind === 'captcha' ? '请输入验证结果' : '请输入验证码');
+      if (input) input.focus();
+      return;
+    }
+
+    const button = form.querySelector('[data-paypal-intervention-submit]');
+    const selectableKind = kindControl && kindControl.tagName !== 'INPUT';
+    form.dataset.paypalSubmitting = '1';
+    if (button) button.disabled = true;
+    if (input) input.disabled = true;
+    if (selectableKind) kindControl.disabled = true;
+    try {
+      await requestJson(`/api/paypal-protocol/cdk/${kind}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: Number(accountId) || accountId, value }),
+      });
+      // 清空输入框后再刷新，避免人工验证码在后续 DOM 或提示中残留。
+      if (input) input.value = '';
+      notify(kind === 'captcha' ? '验证结果已提交，支付任务已入队/恢复，正在刷新' : '验证码已提交，支付任务已入队/恢复，正在刷新');
+      await loadPaypalProtocol({ silent: true });
+    } catch (error) {
+      // 不把服务端返回的任务详情/敏感字段回显到页面。
+      notify(kind === 'captcha' ? '提交验证结果失败，请检查后重试' : '提交验证码失败，请检查后重试');
+    } finally {
+      if (form.isConnected) {
+        delete form.dataset.paypalSubmitting;
+        if (button) button.disabled = false;
+        if (input) input.disabled = false;
+        if (selectableKind) kindControl.disabled = false;
+      }
+    }
+  }
+
   async function runPayment(items, button) {
     const payable = items.filter(canRunPayment);
     if (!payable.length) return;
@@ -1100,6 +1199,13 @@
     });
   }
 
+  function hasInterventionDraft(mount) {
+    if (!mount) return false;
+    const input = mount.querySelector('[data-paypal-intervention-input]');
+    const focused = document.activeElement;
+    return Boolean((focused && focused.closest && focused.closest('[data-paypal-intervention-form]')) || (input && input.value));
+  }
+
   function markSettingDirty(element) {
     const mapping = {
       paypalAutoExtract: 'auto_extract', paypalAutoPayment: 'auto_payment', paypalPaymentCountry: 'payment_country',
@@ -1172,6 +1278,19 @@
     const mount = byId('tab-paypal-protocol');
     if (!mount) return;
     mount.addEventListener('change', (event) => {
+      const interventionKind = event.target.closest('[data-paypal-intervention-kind]');
+      if (interventionKind && interventionKind.tagName === 'SELECT') {
+        const form = interventionKind.closest('[data-paypal-intervention-form]');
+        const input = form && form.querySelector('[data-paypal-intervention-input]');
+        const captcha = String(interventionKind.value || '').toLowerCase() === 'captcha';
+        if (input) {
+          input.placeholder = captcha ? '输入验证结果' : '输入验证码';
+          input.setAttribute('aria-label', captcha ? '输入验证结果' : '输入验证码');
+          input.setAttribute('inputmode', captcha ? 'text' : 'numeric');
+          input.setAttribute('autocomplete', captcha ? 'off' : 'one-time-code');
+        }
+        return;
+      }
       const cdkCheckbox = event.target.closest('[data-paypal-cdk-select]');
       if (cdkCheckbox) {
         const id = cdkCheckbox.dataset.paypalCdkSelect;
@@ -1191,6 +1310,12 @@
         state.selected.clear();
         loadPaypalProtocol({ silent: true });
       }
+    });
+    mount.addEventListener('submit', (event) => {
+      const form = event.target.closest('[data-paypal-intervention-form]');
+      if (!form || !mount.contains(form)) return;
+      event.preventDefault();
+      submitIntervention(form);
     });
     mount.addEventListener('click', (event) => {
       const target = event.target;
@@ -1226,6 +1351,15 @@
         if (input) input.value = '';
         state.settingsDirty.add(key);
         saveSettings({ clearSetting: key });
+        return;
+      }
+      const interventionSubmit = target.closest('[data-paypal-intervention-submit]');
+      if (interventionSubmit) {
+        const form = interventionSubmit.closest('[data-paypal-intervention-form]');
+        if (form) {
+          event.preventDefault();
+          submitIntervention(form);
+        }
         return;
       }
       const extract = target.closest('[data-paypal-extract]');
@@ -1267,7 +1401,7 @@
     if (!mount.classList.contains('hidden')) loadPaypalProtocol({ silent: true });
     setInterval(updateCountdowns, 1000);
     setInterval(() => {
-      if (!mount.classList.contains('hidden') && !document.hidden) loadPaypalProtocol({ silent: true });
+      if (!mount.classList.contains('hidden') && !document.hidden && !hasInterventionDraft(mount)) loadPaypalProtocol({ silent: true });
     }, 5000);
   }
 

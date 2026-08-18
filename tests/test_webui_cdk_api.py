@@ -66,3 +66,32 @@ def test_cdk_settings_validate_country_and_map_backend():
 
     invalid = client.post("/api/paypal-protocol/settings", json={"cdk_country": "USA"})
     assert invalid.status_code == 400
+
+
+def test_manual_cdk_intervention_returns_async_ack_without_task_payload():
+    client = _client()
+    with patch(
+        "webui.app.cdk_web_backend.submit_intervention",
+        return_value={
+            "accepted": True,
+            "status": "running",
+            "kind": "otp",
+            "protocol_job_id": "payment-fixture",
+            "future": object(),
+        },
+    ) as submit:
+        response = client.post(
+            "/api/paypal-protocol/cdk/otp",
+            json={"account_id": 7, "value": "123456"},
+        )
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload == {
+        "ok": True,
+        "accepted": True,
+        "status": "running",
+        "kind": "otp",
+        "protocol_job_id": "payment-fixture",
+    }
+    submit.assert_called_once_with(account_id=7, value="123456", kind="otp")
+    assert "123456" not in response.get_data(as_text=True)

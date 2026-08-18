@@ -1821,6 +1821,11 @@ def claim_account_extract(
         row["extract_link_error"] = None
         row["extract_link_message"] = "已入队"
         row["extract_link_proxy_source"] = None
+        # A new extraction invalidates every previous protocol-payment result.
+        # Keep the three Paypal协议 buckets aligned with the newest link.
+        for key in list(row):
+            if key.startswith("paypal_payment_"):
+                row[key] = None
         for key in (
             "extract_link_job_id",
             "extract_link_cdk_remaining",
@@ -1833,6 +1838,7 @@ def claim_account_extract(
             "extract_link_expires_at",
             "extract_link_result_json",
             "extract_link_cdk_visitor",
+            "extract_link_cdk_session_json",
         ):
             row[key] = None
         row["updated_at"] = now
@@ -1882,6 +1888,25 @@ def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
             row["extract_link_backend"] = str(result.get("backend") or "").strip().lower() or None
         if result.get("visitor_id") is not None:
             row["extract_link_cdk_visitor"] = str(result.get("visitor_id") or "")[:128] or None
+        session_state = result.get("session_state")
+        if isinstance(session_state, dict):
+            # The resumable CDK visitor/cookie state is private account data;
+            # it is deliberately omitted by list_paypal_protocol_links().
+            visitor = str(session_state.get("visitor_id") or session_state.get("visitor") or "").strip()[:128]
+            raw_cookies = session_state.get("cookies")
+            cookies = {}
+            if isinstance(raw_cookies, dict):
+                for cookie_name, cookie_value in raw_cookies.items():
+                    name = str(cookie_name or "").strip()[:80]
+                    value = str(cookie_value or "").strip()[:512]
+                    if name and value:
+                        cookies[name] = value
+            if visitor or cookies:
+                row["extract_link_cdk_session_json"] = json.dumps(
+                    {"visitor_id": visitor, "cookies": cookies},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )[:10000]
         if result.get("cdk_remaining") is not None:
             row["extract_link_cdk_remaining"] = result.get("cdk_remaining")
         if result.get("proxy_source") is not None:
@@ -1947,6 +1972,12 @@ def claim_account_paypal_payment(
                     return False
             except (TypeError, ValueError):
                 pass
+        # Clear stale metadata before initializing the new payment attempt.
+        # This must happen before assigning queued/status fields; otherwise a
+        # blanket cleanup would erase the freshly claimed task.
+        for key in list(row):
+            if key.startswith("paypal_payment_"):
+                row[key] = None
         now = _now()
         row["paypal_payment_status"] = "queued"
         row["paypal_payment_ok"] = False
@@ -1971,12 +2002,6 @@ def claim_account_paypal_payment(
             "paypal_payment_result_json",
         ):
             row[key] = None
-        # A fresh extraction invalidates the previous BA/payment result.  This
-        # keeps the three Paypal协议 buckets aligned with the newest link and
-        # prevents an old paid record from being shown while a new task runs.
-        for key in list(row):
-            if key.startswith("paypal_payment_"):
-                row[key] = None
         row["updated_at"] = now
         _save_accounts(accounts)
         return True

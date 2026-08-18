@@ -1590,7 +1590,16 @@ def create_app(auth_code: str | None = None) -> Flask:
             result = cdk_web_backend.submit_intervention(account_id=account_id, value=value, kind=kind)
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
-        return jsonify({"ok": True, "result": result})
+        # The submit call only acknowledges the remote task input.  The same
+        # payment task is polled asynchronously and its final state is written
+        # back to the account record by the CDK backend.
+        return jsonify({
+            "ok": True,
+            "accepted": bool(result.get("accepted", True)) if isinstance(result, dict) else True,
+            "status": result.get("status", "running") if isinstance(result, dict) else "running",
+            "kind": result.get("kind", kind) if isinstance(result, dict) else kind,
+            "protocol_job_id": result.get("protocol_job_id") if isinstance(result, dict) else None,
+        }), 202
 
     @app.post("/api/accounts/extract-link")
     @app.post("/api/paypal-protocol/extract")
