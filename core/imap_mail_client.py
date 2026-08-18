@@ -152,16 +152,32 @@ def _parse_message(raw_bytes: bytes) -> dict | None:
     }
 
 
-def _fetch_messages_since(conn, folder: str, since_ts: float) -> list[dict]:
+def _fetch_messages_since(
+    conn,
+    folder: str,
+    since_ts: float,
+    *,
+    message_limit: int | None = None,
+) -> list[dict]:
     """抓取 since_ts 之后的邮件，返回 [{item, ts}]。"""
     conn.select(folder, readonly=True)
-    # IMAP SINCE 只按日期；多取一天再用 InternalDate 精确过滤
-    from datetime import datetime, timedelta, timezone as dt_timezone
-    search_date = (datetime.fromtimestamp(since_ts, dt_timezone.utc) - timedelta(days=1)).strftime("%d-%b-%Y")
-    typ, data = conn.search(None, "SINCE", search_date)
+    # recent-mail viewer 传 0 表示不设时间下限；避免生成 1969 年日期。
+    if float(since_ts) <= 0:
+        typ, data = conn.search(None, "ALL")
+    else:
+        # IMAP SINCE 只按日期；多取一天再用 InternalDate 精确过滤
+        from datetime import datetime, timedelta, timezone as dt_timezone
+        search_date = (datetime.fromtimestamp(since_ts, dt_timezone.utc) - timedelta(days=1)).strftime("%d-%b-%Y")
+        typ, data = conn.search(None, "SINCE", search_date)
     if typ != "OK":
         return []
     ids = (data[0] or b"").split()
+    if message_limit is not None:
+        try:
+            amount = max(1, min(100, int(message_limit)))
+        except (TypeError, ValueError):
+            amount = 10
+        ids = ids[-amount:]
     out = []
     for msg_id in ids:
         try:
@@ -201,6 +217,42 @@ def _fetch_messages_since(conn, folder: str, since_ts: float) -> list[dict]:
         except Exception as exc:
             logger.debug("[IMAP] 读取消息 %s 失败: %s", msg_id, exc)
     return out
+
+
+def list_recent_messages(email: str, limit: int = 10) -> list[dict]:
+    """Read the newest messages for an imported password-IMAP mailbox."""
+    target = str(email or "").strip()
+    account = get_account_context(target)
+    if not account or not account.get("password"):
+        raise ImapMailError(f"IMAP 邮箱不存在、未导入或缺少密码: {target}")
+    try:
+        amount = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        amount = 10
+
+    conn = None
+    try:
+        conn, folder = _connect(target, account["password"])
+        rows = _fetch_messages_since(
+            conn,
+            folder,
+            0.0,
+            message_limit=amount,
+        )
+    finally:
+        if conn is not None:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+
+    rows.sort(key=lambda row: float(row.get("ts") or 0.0), reverse=True)
+    messages = []
+    for row in rows[:amount]:
+        item = dict(row.get("item") or {})
+        item["ts"] = row.get("ts")
+        messages.append(item)
+    return messages
 
 
 def fetch_latest_otp(

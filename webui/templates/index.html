@@ -1636,6 +1636,7 @@
     #outlookImportModal:not(.hidden),
     #tokenImportModal:not(.hidden),
     #plusCheckModal:not(.hidden),
+    #recentMailModal:not(.hidden),
     #plusMailModal:not(.hidden) {
       position: fixed; inset: 0; z-index: 1200;
       display: flex; align-items: center; justify-content: center;
@@ -1778,6 +1779,69 @@
     }
     .outlook-import-foot .jobs-tb-btn:disabled {
       opacity: .7; cursor: not-allowed;
+    }
+
+    /* ---- 邮箱池最近邮件 ---- */
+    .recent-mail-dialog { width: min(980px, 100%); }
+    .recent-mail-body { flex: 1; min-height: 0; overflow: hidden; }
+    .recent-mail-layout {
+      display: grid; grid-template-columns: minmax(240px, .82fr) minmax(0, 1.38fr);
+      gap: 14px; min-height: 360px; height: min(560px, calc(100vh - 250px));
+    }
+    .recent-mail-list,
+    .recent-mail-detail {
+      min-width: 0; min-height: 0; border: 1px solid #ebeef5;
+      border-radius: 8px; background: #fff; overflow: auto;
+    }
+    .recent-mail-list { display: flex; flex-direction: column; }
+    .recent-mail-state {
+      display: flex; flex: 1; min-height: 150px; align-items: center;
+      justify-content: center; padding: 24px; box-sizing: border-box;
+      color: #909399; font-size: 13px; line-height: 1.6; text-align: center;
+    }
+    .recent-mail-state.is-error { color: #c45656; background: #fef0f0; }
+    .recent-mail-item {
+      width: 100%; padding: 13px 14px; border: 0; border-bottom: 1px solid #ebeef5;
+      border-radius: 0; background: #fff; color: #606266; font: inherit;
+      text-align: left; cursor: pointer; box-sizing: border-box;
+    }
+    .recent-mail-item:last-child { border-bottom: 0; }
+    .recent-mail-item:hover { background: #f5f7fa; }
+    .recent-mail-item.is-active { background: #ecf5ff; box-shadow: inset 3px 0 0 #377DFF; }
+    .recent-mail-item-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 10px; min-width: 0;
+    }
+    .recent-mail-item-subject {
+      min-width: 0; overflow: hidden; color: #303133; font-size: 13px;
+      font-weight: 600; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .recent-mail-item-time { flex-shrink: 0; color: #a8abb2; font-size: 11px; white-space: nowrap; }
+    .recent-mail-item-from,
+    .recent-mail-item-preview {
+      margin-top: 5px; overflow: hidden; color: #909399; font-size: 12px;
+      line-height: 1.45; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .recent-mail-detail { display: flex; flex-direction: column; overflow: hidden; }
+    .recent-mail-detail-head { padding: 14px 16px; border-bottom: 1px solid #ebeef5; }
+    .recent-mail-detail-head h4 {
+      margin: 0; color: #303133; font-size: 15px; line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .recent-mail-detail-head p {
+      margin: 7px 0 0; color: #909399; font-size: 12px; line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .recent-mail-detail-body {
+      flex: 1; min-height: 0; margin: 0; padding: 16px; overflow: auto;
+      box-sizing: border-box; color: #606266; background: #fafbfc;
+      font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace;
+      white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+    }
+    .recent-mail-detail.is-empty .recent-mail-detail-head { display: none; }
+    .recent-mail-detail.is-empty .recent-mail-detail-body {
+      display: flex; align-items: center; justify-content: center;
+      color: #909399; font-family: inherit; text-align: center;
     }
 
 
@@ -2114,6 +2178,15 @@
         margin-left: 0; max-width: 100%; flex-wrap: wrap;
       }
       #accountsToolbarV2 .jobs-tb-btn { padding-left: 10px; padding-right: 10px; }
+      #recentMailModal:not(.hidden) { align-items: stretch; padding: 10px; }
+      .recent-mail-dialog { max-height: calc(100vh - 20px); }
+      .recent-mail-dialog .outlook-import-head { padding: 16px 14px 12px; }
+      .recent-mail-body { padding: 12px; }
+      .recent-mail-layout {
+        grid-template-columns: 1fr; grid-template-rows: minmax(150px, .8fr) minmax(190px, 1.2fr);
+        min-height: 0; height: calc(100vh - 210px); gap: 10px;
+      }
+      .recent-mail-dialog .outlook-import-foot { padding: 10px 14px 14px; }
     }
 
   </style>
@@ -2686,6 +2759,34 @@
     </div>
   </div>
 </div>
+<!-- 邮箱池最近邮件弹窗 -->
+<div id="recentMailModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="recentMailTitle">
+  <div class="outlook-import-dialog recent-mail-dialog">
+    <div class="outlook-import-head">
+      <div class="outlook-import-head-main">
+        <h3 id="recentMailTitle">最近邮件</h3>
+        <p id="recentMailMeta">选择邮箱后读取最近 10 封邮件</p>
+      </div>
+      <button type="button" class="outlook-import-close" id="btnCloseRecentMail" aria-label="关闭">×</button>
+    </div>
+    <div class="outlook-import-body recent-mail-body">
+      <div class="recent-mail-layout">
+        <div class="recent-mail-list" id="recentMailList" role="listbox" aria-label="最近邮件列表" aria-live="polite"></div>
+        <section class="recent-mail-detail is-empty" id="recentMailDetail" aria-live="polite">
+          <div class="recent-mail-detail-head">
+            <h4 id="recentMailDetailTitle"></h4>
+            <p id="recentMailDetailMeta"></p>
+          </div>
+          <pre class="recent-mail-detail-body" id="recentMailDetailBody">从左侧选择一封邮件查看正文</pre>
+        </section>
+      </div>
+    </div>
+    <div class="outlook-import-foot">
+      <button type="button" class="jobs-tb-btn" id="btnCloseRecentMail2">关闭</button>
+      <button type="button" class="jobs-tb-btn jobs-tb-btn--primary" id="btnRefreshRecentMail">刷新</button>
+    </div>
+  </div>
+</div>
 <!-- Plus 检测结果 / 邮件查看弹窗 -->
 <div id="plusCheckModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="plusCheckTitle">
   <div class="outlook-import-dialog" style="max-width:860px;">
@@ -3237,6 +3338,7 @@ function updateModalScrollLock() {
     || !$('#qrPanel').classList.contains('hidden')
     || !$('#tokenImportModal').classList.contains('hidden')
     || !$('#outlookImportModal').classList.contains('hidden')
+    || !$('#recentMailModal').classList.contains('hidden')
     || !$('#plusCheckModal').classList.contains('hidden')
     || !$('#plusMailModal').classList.contains('hidden');
   const locked = document.body.classList.contains('modal-open');
@@ -5864,6 +5966,240 @@ function poolKey(r) { return `${r.source || getPoolSource() || 'outlook'}|${r.em
 function poolLabel(src) {
   return ({outlook:'Outlook', generic_api:'通用API', imap_pass:'IMAP', mailcom:'mail.com / GMX', cloudflare_domain:'域名邮箱'})[src] || src || '-';
 }
+let RECENT_MAIL_REQUEST_SEQ = 0;
+let RECENT_MAIL_CONTEXT = {
+  source: '',
+  email: '',
+  messages: [],
+  selected: -1,
+  loading: false,
+  error: '',
+};
+function recentMailTextValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'object') {
+    const content = value.content ?? value.text ?? value.value;
+    if (content != null && content !== value) return recentMailTextValue(content);
+    try { return JSON.stringify(value, null, 2); } catch (_) { return String(value); }
+  }
+  return String(value);
+}
+function recentMailSender(raw) {
+  const value = raw.from ?? raw.sender ?? raw.from_email ?? raw.fromEmail ?? '';
+  if (!value || typeof value !== 'object') return recentMailTextValue(value);
+  const addressObj = value.emailAddress || value.email_address || value;
+  const name = recentMailTextValue(addressObj.name || value.name || '');
+  const address = recentMailTextValue(addressObj.address || addressObj.email || value.address || '');
+  return name && address ? `${name} <${address}>` : (address || name);
+}
+function recentMailDateLabel(value) {
+  if (value == null || value === '') return '';
+  let normalized = value;
+  if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value).trim())) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) normalized = numeric < 1e12 ? numeric * 1000 : numeric;
+  }
+  return formatDateTime(normalized);
+}
+function normalizeRecentMail(raw, index) {
+  const row = raw && typeof raw === 'object' ? raw : {text: raw};
+  const subject = recentMailTextValue(row.subject || row.title || '') || '(无主题)';
+  const preview = recentMailTextValue(
+    row.preview ?? row.body_preview ?? row.bodyPreview ?? ''
+  );
+  const body = recentMailTextValue(
+    row.text ?? row.body_text ?? row.bodyText ?? row.content ?? row.body
+      ?? row.body_preview ?? row.bodyPreview ?? row.preview ?? row.html ?? row.bodyHtml ?? ''
+  );
+  const receivedRaw = row.received_at ?? row.receivedAt ?? row.receivedDateTime
+    ?? row.date ?? row.timestamp ?? row.created_at ?? row.createdAt ?? row.ts ?? '';
+  return {
+    id: recentMailTextValue(row.id ?? row.message_id ?? row.messageId ?? index),
+    subject,
+    from: recentMailSender(row),
+    to: recentMailTextValue(row.to ?? row.recipients ?? ''),
+    receivedAt: recentMailDateLabel(receivedRaw),
+    body,
+    preview: preview || body.slice(0, 1000),
+  };
+}
+function resetRecentMailDetail(message = '从左侧选择一封邮件查看正文') {
+  const detail = $('#recentMailDetail');
+  if (detail) detail.classList.add('is-empty');
+  const title = $('#recentMailDetailTitle');
+  const meta = $('#recentMailDetailMeta');
+  const body = $('#recentMailDetailBody');
+  if (title) title.textContent = '';
+  if (meta) meta.textContent = '';
+  if (body) body.textContent = message;
+}
+function renderRecentMailDetail() {
+  const mail = RECENT_MAIL_CONTEXT.messages[RECENT_MAIL_CONTEXT.selected];
+  if (!mail) {
+    const message = RECENT_MAIL_CONTEXT.loading
+      ? '正在读取最近邮件…'
+      : RECENT_MAIL_CONTEXT.error
+        ? '读取失败，可点击“刷新”重试'
+        : RECENT_MAIL_CONTEXT.messages.length
+          ? '从左侧选择一封邮件查看正文'
+          : '该邮箱暂无最近邮件';
+    resetRecentMailDetail(message);
+    return;
+  }
+  const detail = $('#recentMailDetail');
+  if (detail) detail.classList.remove('is-empty');
+  const title = $('#recentMailDetailTitle');
+  const meta = $('#recentMailDetailMeta');
+  const body = $('#recentMailDetailBody');
+  if (title) title.textContent = mail.subject || '(无主题)';
+  if (meta) {
+    meta.textContent = `发件人：${mail.from || '-'} ｜ 收件人：${mail.to || '-'} ｜ 时间：${mail.receivedAt || '-'}`;
+  }
+  // 邮件正文只通过 textContent 写入，避免邮件 HTML 被浏览器执行。
+  if (body) body.textContent = mail.body || '(邮件正文为空)';
+}
+function selectRecentMail(index) {
+  const next = Number(index);
+  if (!Number.isInteger(next) || !RECENT_MAIL_CONTEXT.messages[next]) return;
+  RECENT_MAIL_CONTEXT.selected = next;
+  renderRecentMailList();
+  renderRecentMailDetail();
+}
+function renderRecentMailList() {
+  const list = $('#recentMailList');
+  if (!list) return;
+  list.replaceChildren();
+  if (RECENT_MAIL_CONTEXT.loading || RECENT_MAIL_CONTEXT.error || !RECENT_MAIL_CONTEXT.messages.length) {
+    const state = document.createElement('div');
+    state.className = `recent-mail-state${RECENT_MAIL_CONTEXT.error ? ' is-error' : ''}`;
+    state.textContent = RECENT_MAIL_CONTEXT.loading
+      ? '正在读取最近 10 封邮件…'
+      : RECENT_MAIL_CONTEXT.error
+        ? `读取失败：${RECENT_MAIL_CONTEXT.error}`
+        : '该邮箱暂无最近邮件';
+    list.appendChild(state);
+    return;
+  }
+  RECENT_MAIL_CONTEXT.messages.forEach((mail, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('role', 'option');
+    button.className = `recent-mail-item${index === RECENT_MAIL_CONTEXT.selected ? ' is-active' : ''}`;
+    button.setAttribute('aria-selected', index === RECENT_MAIL_CONTEXT.selected ? 'true' : 'false');
+    button.addEventListener('click', () => selectRecentMail(index));
+
+    const head = document.createElement('div');
+    head.className = 'recent-mail-item-head';
+    const subject = document.createElement('span');
+    subject.className = 'recent-mail-item-subject';
+    subject.textContent = mail.subject || '(无主题)';
+    subject.title = mail.subject || '(无主题)';
+    const time = document.createElement('span');
+    time.className = 'recent-mail-item-time';
+    time.textContent = mail.receivedAt || '-';
+    head.append(subject, time);
+
+    const from = document.createElement('div');
+    from.className = 'recent-mail-item-from';
+    from.textContent = `发件人：${mail.from || '-'}`;
+    const preview = document.createElement('div');
+    preview.className = 'recent-mail-item-preview';
+    preview.textContent = (mail.preview || '(邮件正文为空)').replace(/\s+/g, ' ').trim();
+    button.append(head, from, preview);
+    list.appendChild(button);
+  });
+}
+function renderRecentMailModal() {
+  const meta = $('#recentMailMeta');
+  const refresh = $('#btnRefreshRecentMail');
+  if (meta) {
+    const countLabel = RECENT_MAIL_CONTEXT.loading
+      ? '读取中…'
+      : RECENT_MAIL_CONTEXT.error
+        ? '读取失败'
+        : `共 ${RECENT_MAIL_CONTEXT.messages.length} 封`;
+    meta.textContent = `${RECENT_MAIL_CONTEXT.email || '-'} ｜ ${poolLabel(RECENT_MAIL_CONTEXT.source)} ｜ ${countLabel}`;
+  }
+  if (refresh) {
+    refresh.disabled = RECENT_MAIL_CONTEXT.loading;
+    refresh.textContent = RECENT_MAIL_CONTEXT.loading ? '刷新中…' : '刷新';
+  }
+  renderRecentMailList();
+  renderRecentMailDetail();
+}
+async function loadRecentMails() {
+  const source = RECENT_MAIL_CONTEXT.source;
+  const email = RECENT_MAIL_CONTEXT.email;
+  if (!source || !email) return;
+  const requestSeq = ++RECENT_MAIL_REQUEST_SEQ;
+  RECENT_MAIL_CONTEXT.loading = true;
+  RECENT_MAIL_CONTEXT.error = '';
+  RECENT_MAIL_CONTEXT.messages = [];
+  RECENT_MAIL_CONTEXT.selected = -1;
+  renderRecentMailModal();
+  try {
+    const result = await api(`/api/email-pool/recent-messages?source=${encodeURIComponent(source)}&email=${encodeURIComponent(email)}&limit=10`);
+    if (requestSeq !== RECENT_MAIL_REQUEST_SEQ) return;
+    if (result && result.ok === false) throw new Error(result.error || '最近邮件读取失败');
+    const payload = result && result.data && typeof result.data === 'object' ? result.data : result;
+    const rows = Array.isArray(payload)
+      ? payload
+      : ((payload && (payload.messages || payload.items || payload.mails)) || []);
+    RECENT_MAIL_CONTEXT.messages = (Array.isArray(rows) ? rows : [])
+      .slice(0, 10)
+      .map(normalizeRecentMail);
+    RECENT_MAIL_CONTEXT.selected = RECENT_MAIL_CONTEXT.messages.length ? 0 : -1;
+  } catch (err) {
+    if (requestSeq !== RECENT_MAIL_REQUEST_SEQ) return;
+    RECENT_MAIL_CONTEXT.error = err && err.message ? err.message : '未知错误';
+    showToast('读取最近邮件失败: ' + RECENT_MAIL_CONTEXT.error);
+  } finally {
+    if (requestSeq === RECENT_MAIL_REQUEST_SEQ) {
+      RECENT_MAIL_CONTEXT.loading = false;
+      renderRecentMailModal();
+    }
+  }
+}
+function openRecentMailModal(source, email) {
+  RECENT_MAIL_CONTEXT = {
+    source: source || 'outlook',
+    email: email || '',
+    messages: [],
+    selected: -1,
+    loading: false,
+    error: '',
+  };
+  const modal = $('#recentMailModal');
+  if (modal) {
+    modal.classList.remove('hidden');
+    updateModalScrollLock();
+  }
+  loadRecentMails();
+}
+function closeRecentMailModal() {
+  RECENT_MAIL_REQUEST_SEQ += 1;
+  RECENT_MAIL_CONTEXT.loading = false;
+  const modal = $('#recentMailModal');
+  if (modal) {
+    modal.classList.add('hidden');
+    updateModalScrollLock();
+  }
+}
+function bindRecentMailModal() {
+  const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+  bind('btnCloseRecentMail', closeRecentMailModal);
+  bind('btnCloseRecentMail2', closeRecentMailModal);
+  bind('btnRefreshRecentMail', loadRecentMails);
+  const modal = $('#recentMailModal');
+  if (modal) modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeRecentMailModal();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && modal && !modal.classList.contains('hidden')) closeRecentMailModal();
+  });
+}
 async function loadOutlook() {
   try {
     const source = getPoolSource();
@@ -5939,6 +6275,7 @@ function renderOutlook() {
       <td class="col-actions">
         <div class="acc-v2-actions">
           ${cbtn('复制邮箱', r.copy_line, 'primary')}
+          <button type="button" data-pool-recent-mail data-email="${email}" data-source="${src}" title="查看最近 10 封邮件">最近邮件</button>
           <button type="button" class="danger" data-pool-act="delete" data-email="${email}" data-source="${src}" title="删除邮箱素材">删除</button>
           <div class="acc-v2-more">
             <button type="button" class="acc-v2-more-btn" data-outlook-more-toggle aria-haspopup="true">更多</button>
@@ -6015,6 +6352,14 @@ async function onOutlookBodyClick(e) {
   }
   if (e.target.closest('.acc-v2-more-menu')) closeOutlookV2MoreMenus();
 
+  const recentMail = e.target.closest('[data-pool-recent-mail]');
+  if (recentMail) {
+    openRecentMailModal(
+      recentMail.dataset.source || getPoolSource(),
+      recentMail.dataset.email || '',
+    );
+    return;
+  }
   const t = e.target.closest('[data-pool-act]');
   if (!t) return;
   const { poolAct, email } = t.dataset;
@@ -6113,6 +6458,7 @@ async function onOutlookBodyClick(e) {
   window.addEventListener('resize', () => closeOutlookV2MoreMenus());
   bindTokenImportModal();
   bindOutlookImportModal();
+  bindRecentMailModal();
   bindPlusCheckModals();
   initAccountBoxSelect();
   bindSmsCountryPicker();

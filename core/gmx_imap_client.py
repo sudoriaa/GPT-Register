@@ -313,10 +313,13 @@ def _fetch_messages_since(
         typ, _ = conn.select(folder, readonly=True)
         if typ != "OK":
             return []
-        search_date = (
-            datetime.fromtimestamp(float(since_ts), dt_timezone.utc) - timedelta(days=1)
-        ).strftime("%d-%b-%Y")
-        typ, data = conn.search(None, "SINCE", search_date)
+        if float(since_ts) <= 0:
+            typ, data = conn.search(None, "ALL")
+        else:
+            search_date = (
+                datetime.fromtimestamp(float(since_ts), dt_timezone.utc) - timedelta(days=1)
+            ).strftime("%d-%b-%Y")
+            typ, data = conn.search(None, "SINCE", search_date)
         if typ != "OK" or not data:
             return []
         ids = (data[0] or b"").split()

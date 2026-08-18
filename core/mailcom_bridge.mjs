@@ -245,6 +245,7 @@ async function listMessages(input) {
   const proxy = String(input.proxy ?? "").trim();
   const amount = Math.max(1, Math.min(100, Number(input.amount) || 25));
   const afterTs = Number(input.after_ts) || 0;
+  const includeAllBodies = Boolean(input.include_all_bodies);
   const sessionStore = new FileSessionStore(sessionDir);
   try {
     await sessionStore.load(email);
@@ -316,7 +317,7 @@ async function listMessages(input) {
     const header = entry.message?.mailHeader ?? {};
     const preview = previewById.get(entry.id) ?? "";
     let html = "";
-    if (looksRelevant(entry.message, preview)) {
+    if (includeAllBodies || looksRelevant(entry.message, preview)) {
       try {
         html = await client.mail.getBody(entry.id, { format: "html", markRead: false });
       } catch {

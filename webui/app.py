@@ -30,6 +30,7 @@ from core import (
     cdk_web_backend,
     codex_agent_service,
     live_check_service,
+    recent_mail_service,
     subscription_service,
     twofa_service,
 )
@@ -2592,6 +2593,32 @@ def create_app(auth_code: str | None = None) -> Flask:
     # ----------------------------------------------------------
     # 邮箱池
     # ----------------------------------------------------------
+    @app.get("/api/email-pool/recent-messages")
+    def api_email_pool_recent_messages():
+        """按邮箱池来源读取一条邮箱的最近邮件（纯文本、无凭据）。"""
+
+        def response(payload: dict, status: int = 200):
+            result = jsonify(payload)
+            result.status_code = status
+            result.headers["Cache-Control"] = "no-store, max-age=0"
+            result.headers["Pragma"] = "no-cache"
+            result.headers["Expires"] = "0"
+            return result
+
+        try:
+            result = recent_mail_service.fetch_recent_messages(
+                email=request.args.get("email"),
+                source=request.args.get("source"),
+                limit=request.args.get("limit"),
+            )
+            return response({"ok": True, **result})
+        except recent_mail_service.RecentMailValidationError as exc:
+            return response({"ok": False, "error": str(exc)}, 400)
+        except recent_mail_service.RecentMailNotFoundError as exc:
+            return response({"ok": False, "error": str(exc)}, 404)
+        except recent_mail_service.RecentMailFetchError as exc:
+            return response({"ok": False, "error": str(exc)}, 502)
+
     @app.get("/api/outlook")
     def api_outlook():
         status = request.args.get("status") or None

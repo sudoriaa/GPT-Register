@@ -170,10 +170,28 @@ def _proxy_route_login_failed(exc: BaseException) -> bool:
     )
 
 
-def _list_messages(email: str, password: str, after_ts: float) -> list[dict]:
+def _list_messages(
+    email: str,
+    password: str,
+    after_ts: float,
+    *,
+    message_limit: int | None = None,
+    include_all_bodies: bool = False,
+) -> list[dict]:
     # GMX/Caramail 与 mail.com 同属一套账号体系，但 OAuth 主机不同。继续复用
     # mailcom 邮箱池，只在取信层按域名切到 GMX 官方 IMAP，避免无效 OAuth 重试。
     from core import gmx_imap_client
+
+    try:
+        amount = max(
+            1,
+            min(
+                100,
+                int(message_limit if message_limit is not None else _message_limit()),
+            ),
+        )
+    except (TypeError, ValueError):
+        amount = _message_limit()
 
     if gmx_imap_client.is_gmx_email(email):
         try:
@@ -181,7 +199,7 @@ def _list_messages(email: str, password: str, after_ts: float) -> list[dict]:
                 email,
                 password,
                 after_ts,
-                message_limit=_message_limit(),
+                message_limit=amount,
             )
         except gmx_imap_client.GmxImapError as exc:
             detail = str(exc)
@@ -208,7 +226,8 @@ def _list_messages(email: str, password: str, after_ts: float) -> list[dict]:
             "session_dir": str(_session_dir()),
             "proxy": "" if prefer_direct else configured_proxy,
             "after_ts": float(after_ts),
-            "amount": _message_limit(),
+            "amount": amount,
+            "include_all_bodies": bool(include_all_bodies),
         }
         try:
             result = _run_bridge(payload)
@@ -234,6 +253,25 @@ def _list_messages(email: str, password: str, after_ts: float) -> list[dict]:
     if not isinstance(messages, list):
         raise MailComError("mail.com SDK 响应缺少 messages 数组")
     return [item for item in messages if isinstance(item, dict)]
+
+
+def list_recent_messages(email: str, limit: int = 10) -> list[dict]:
+    """Read recent mail.com/GMX messages without exposing pool credentials."""
+    target = str(email or "").strip()
+    account = get_account_context(target)
+    if account is None or not account.password:
+        raise MailComError(f"mail.com / GMX 邮箱不存在、未导入或缺少密码: {target}")
+    try:
+        amount = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        amount = 10
+    return _list_messages(
+        target,
+        account.password,
+        0.0,
+        message_limit=amount,
+        include_all_bodies=True,
+    )[:amount]
 
 
 def get_account_context(email: str) -> MailComAccount | None:

@@ -16,6 +16,7 @@ import string
 import time
 from datetime import datetime, timezone
 from email.header import decode_header
+from email.utils import getaddresses
 from pathlib import Path
 
 from config import email as _email_cfg
@@ -145,6 +146,22 @@ def _msg_to_dict(msg) -> dict:
     }
 
 
+def _recipient_matches(to_field: object, target: str) -> bool:
+    """Match one address exactly, avoiding alias-prefix collisions."""
+    expected = str(target or "").strip().casefold()
+    raw = str(to_field or "").strip()
+    if not expected or not raw:
+        return False
+    addresses = {
+        str(address or "").strip().casefold()
+        for _name, address in getaddresses([raw])
+        if str(address or "").strip()
+    }
+    if addresses:
+        return expected in addresses
+    return raw.casefold() == expected
+
+
 # ============================================================
 # IMAP 连接与搜索
 # ============================================================
@@ -172,12 +189,22 @@ def _connect_imap() -> imaplib.IMAP4_SSL:
         raise QQMailClientError(f"QQ 邮箱 IMAP 连接失败: {exc}")
 
 
-def _search_messages(mail: imaplib.IMAP4_SSL, after_dt: datetime | None = None) -> list[dict]:
+def _search_messages(
+    mail: imaplib.IMAP4_SSL,
+    after_dt: datetime | None = None,
+    *,
+    message_limit: int = 15,
+    recipient: str | None = None,
+) -> list[dict]:
     """搜索收件箱中 after_dt 之后的邮件，返回 dict 列表。"""
-    search_criteria = "ALL"
-    if after_dt is not None:
+    if recipient:
+        escaped_recipient = str(recipient).replace("\\", "\\\\").replace('"', '\\"')
+        search_criteria = f'(TO "{escaped_recipient}")'
+    elif after_dt is not None:
         date_str = after_dt.strftime("%d-%b-%Y")
         search_criteria = f'(SINCE {date_str})'
+    else:
+        search_criteria = "ALL"
 
     status, msg_ids = mail.search(None, search_criteria)
     if status != "OK":
@@ -188,8 +215,12 @@ def _search_messages(mail: imaplib.IMAP4_SSL, after_dt: datetime | None = None) 
     if not ids:
         return []
 
-    # 只取最近 15 封（防止 inbox 太大，也够用）
-    recent_ids = ids[-15:]
+    # 只取最近少量邮件（防止 inbox 太大）。
+    try:
+        amount = max(1, min(100, int(message_limit)))
+    except (TypeError, ValueError):
+        amount = 15
+    recent_ids = ids[-amount:]
 
     messages = []
     for mid in recent_ids:
@@ -237,6 +268,55 @@ def release_domain_email(email: str, status: str = "available", note: str | None
     """更新域名邮箱状态。"""
     from core.db import release_domain_email as _release
     _release(email, status=status, note=note)
+
+
+def list_recent_messages(email: str, limit: int = 10) -> list[dict]:
+    """Read messages delivered to one Cloudflare-domain mailbox alias."""
+    target = str(email or "").strip()
+    if not target:
+        raise QQMailClientError("域名邮箱地址为空")
+    try:
+        amount = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        amount = 10
+
+    mail = None
+    try:
+        mail = _connect_imap()
+        # Cloudflare aliases share the QQ destination inbox.  Let IMAP select
+        # this alias first so unrelated aliases cannot push its messages out
+        # of a small global look-back window.
+        messages = _search_messages(
+            mail,
+            after_dt=None,
+            message_limit=amount,
+            recipient=target,
+        )
+    except Exception as exc:
+        detail = str(exc)
+        password = str(getattr(_email_cfg, "QQ_IMAP_PASSWORD", "") or "")
+        if password:
+            detail = detail.replace(password, "***")
+        if isinstance(exc, QQMailClientError) and detail == str(exc):
+            raise
+        raise QQMailClientError(f"QQ 邮箱 IMAP 读取失败: {type(exc).__name__}: {detail[:240]}") from exc
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+
+    filtered = [
+        item
+        for item in messages
+        if _recipient_matches(item.get("to"), target)
+    ]
+    filtered.sort(
+        key=lambda item: str(item.get("date") or item.get("receivedDateTime") or ""),
+        reverse=True,
+    )
+    return filtered[:amount]
 
 
 def fetch_latest_otp(
@@ -306,8 +386,7 @@ def fetch_latest_otp(
                 continue
 
             # 必须匹配收件地址（避免捡到其他域名地址的旧验证码）
-            to_field = (item.get("to") or "").lower()
-            if target_lower not in to_field:
+            if not _recipient_matches(item.get("to"), target_lower):
                 continue
 
             subject = item.get("subject") or ""

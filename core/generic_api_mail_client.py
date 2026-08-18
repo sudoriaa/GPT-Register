@@ -1031,6 +1031,24 @@ def fetch_mail_items_for_url(code_url: str, headers: dict | None = None, email: 
     return []
 
 
+def list_recent_messages(email: str, limit: int = 10) -> list[dict]:
+    """Return recent normalized items for one imported generic-API mailbox.
+
+    The pickup URL remains inside this provider and is never returned to the
+    WebUI recent-mail endpoint.
+    """
+    target = str(email or "").strip()
+    account = get_account_context(target)
+    if account is None or not account.code_url:
+        raise GenericApiMailError(f"通用 API 邮箱不存在或未导入: {target}")
+    try:
+        amount = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        amount = 10
+    items = fetch_mail_items_for_url(account.code_url, email=target)
+    return [dict(item) for item in (items or []) if isinstance(item, dict)][:amount]
+
+
 def mail_items_contain_plus(code_url: str, headers: dict | None = None, email: str = "") -> tuple[bool, str, int]:
     """
     检测该取件地址的邮件里是否含 "plus"（不区分大小写，匹配单词）。

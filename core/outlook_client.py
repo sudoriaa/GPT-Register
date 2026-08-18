@@ -901,6 +901,35 @@ def _fetch_via(session: CurlSession, protocol: str, account: OutlookAccount) -> 
     return emails
 
 
+def list_recent_messages(email: str, limit: int = 10) -> list[dict]:
+    """Read the newest Outlook inbox messages with the existing fallbacks."""
+    target = str(email or "").strip()
+    account = get_account_context(target)
+    if account is None:
+        raise OutlookClientError(f"未找到 {target} 的 Outlook 邮箱上下文")
+    try:
+        amount = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        amount = 10
+
+    session = _http_session()
+    try:
+        messages: list[dict] = []
+        for protocol in ("graph", "imap"):
+            rows = _fetch_via(session, protocol, account)
+            messages = [dict(item) for item in (rows or []) if isinstance(item, dict)]
+            if messages:
+                break
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+    messages.sort(key=lambda item: _parse_email_ts(item) or 0.0, reverse=True)
+    return messages[:amount]
+
+
 # settle 机制默认值改为从 config 读取（OTP_SETTLE_SECONDS）
 # 抓到第一封 OTP 后，再多等多少秒看是否有更晚到的邮件。
 # 看到更晚的就重置 settle 计时；连续无新邮件 settle 秒后才返回。
