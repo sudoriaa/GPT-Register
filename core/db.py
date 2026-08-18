@@ -1935,11 +1935,13 @@ def _scrub_extract_public_text(value: Any, row: dict) -> str:
         secret = str(row.get(key) or "")
         if secret:
             text = text.replace(secret, "[REDACTED]")
-    return re.sub(
+    text = re.sub(
         r"(?i)(https?|socks5?h?)://[^\s/@:]+:[^\s/@]+@",
         r"\1://***:***@",
         text,
-    )[:2000]
+    )
+    # Also cover the account-list copy form host:port:user:password.
+    return re.sub(r"(?<![\w./-])[^\s:]+:\d+:[^\s:]+:[^\s]+", "[PROXY_REDACTED]", text)[:2000]
 
 
 def list_paypal_protocol_links(
