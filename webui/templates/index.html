@@ -2112,6 +2112,7 @@
 
   </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='mailcom_converter.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='paypal_protocol.css') }}">
 </head>
 <body>
 <aside class="app-sidebar" aria-label="主导航">
@@ -2158,6 +2159,12 @@
         <path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/><path d="M18 7l-3 3"/><path d="M6 17l3-3"/>
       </svg>
       <span class="sidebar-item-label">mail.com转换</span>
+    </button>
+    <button type="button" data-tab="paypal-protocol" class="sidebar-item">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 7h18v10H3z"/><path d="M3 10h18"/><path d="M7 14h4"/>
+      </svg>
+      <span class="sidebar-item-label">Paypal协议</span>
     </button>
     <button type="button" data-tab="config" class="sidebar-item">
       <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2550,6 +2557,9 @@
   <!-- ============ mail.com转换 ============ -->
   {% include '_mailcom_converter.html' %}
 
+  <!-- ============ Paypal协议 ============ -->
+  <div id="tab-paypal-protocol" class="hidden"></div>
+
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
     <div class="config-overview-v2" id="configOverviewV2" aria-label="配置概览">
@@ -2937,7 +2947,7 @@ function debounce(fn, wait=250) {
 
 // ---------- Tab 切换 ----------
 function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','mailcom-converter','config'];
+  const allowed = ['register','accounts','codex','outlook','mailcom-converter','paypal-protocol','config'];
   if (!allowed.includes(tab)) tab = 'register';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
@@ -2948,6 +2958,7 @@ function activateTab(tab, persist=true) {
   }
   if (tab === 'codex') loadCodex();
   if (tab === 'outlook') loadOutlook();
+  if (tab === 'paypal-protocol' && typeof window.loadPaypalProtocol === 'function') window.loadPaypalProtocol({silent: true});
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
 }
@@ -3820,10 +3831,11 @@ function _extractLinkCell(r) {
     const typ = (r.extract_link_type || '').toUpperCase();
     const link = r.extract_link_long_url || r.extract_link_copy_paste || '';
     const qr = r.extract_link_image_url_png || r.extract_link_image_url_svg || '';
-    const expire = _fmtExtractExpire(r.extract_link_expires_at || '');
+    const expireRaw = r.extract_link_expires_at || '';
+    const expire = _fmtExtractExpire(expireRaw);
     const copy = link ? cbtn('复制提链', link, 'extract-link-btn extract-copy') : '';
     const qrBtn = qr ? `<button class="extract-link-btn extract-qr" data-qr-url="${esc(qr)}" title="打开支付二维码图片">查看二维码</button>` : '';
-    const expireHtml = expire ? `<div class="extract-link-expire" title="支付链接过期时间">支付到期：${esc(expire)}</div>` : '';
+    const expireHtml = expire ? `<div class="extract-link-expire" title="支付链接过期时间">剩余 <span class="paypal-protocol-countdown" data-paypal-countdown data-paypal-expires-at="${esc(expireRaw)}">计算中…</span> · 到期 ${esc(expire)}</div>` : '';
     return `<div class="extract-link-cell"><span class="pill status-success" title="${title || esc(link)}">提链成功${typ ? '(' + esc(typ) + ')' : ''}</span>${copy}${qrBtn}${expireHtml}</div>`;
   }
   if (s === 'failed') {
@@ -3839,7 +3851,7 @@ function _extractLinkAction(r) {
   const eligible = plan === 'free' && !!r.plus_trial_eligible;
   if (!eligible) return '';
   const failedReason = s === 'failed' ? (r.extract_link_error || r.extract_link_message || '') : '';
-  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 PIX/UPI/KAKAO_PAY/IDEAL 提链任务')}">提链</button>`;
+  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 Paypal协议提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
   const s = r.codex_status || '';
@@ -4932,7 +4944,7 @@ async function extractOneLink(id, btn) {
     showToast('仅支持 free(可Plus试用) 账号提链');
     return;
   }
-  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用 PIX/UPI/KAKAO_PAY/IDEAL，成功会消耗 1 次 CDK。`)) return;
+   if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链会使用该账号 AT；代理按 Paypal协议页设置（本次覆盖 > 全局自定义 > 注册代理）。`)) return;
   const old = btn.textContent;
   btn.disabled = true;
   btn.textContent = '提链中…';
@@ -4957,7 +4969,7 @@ async function extractSelectedLinks() {
   const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
   const eligible = selected.filter(a => (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
   if (!eligible.length) { showToast('选中账号里没有 free(可Plus试用)'); return; }
-  if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
+  if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过；代理按 Paypal协议页设置。`)) return;
   const btn = $('#btnExtractSelectedLinksV2');
   const old = btn.textContent;
   btn.disabled = true;
@@ -6854,7 +6866,7 @@ function configSectionIntro(name) {
   if (name === '人工节奏') return '注册流程中的随机停顿节奏。';
   if (name === '浏览器画像') return '浏览器语言、时区与出口 IP 画像。';
   if (name === '代理池') return '代理列表与套餐/Agent 网络模式。';
-  if (name === '提链') return '提链服务地址、CDK 与并发参数。';
+  if (name === '提链') return 'Paypal协议提链路径、代理、自动开关与并发参数。';
   return '';
 }
 function configFeatureIcon(key) {
@@ -7651,6 +7663,7 @@ jobsTimer = setInterval(() => { if (!$('#tab-register').classList.contains('hidd
 setInterval(loadSummary, 5000);
 setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 2000);
 </script>
-<script src="{{ url_for('static', filename='mailcom_converter.js') }}"></script>
+  <script src="{{ url_for('static', filename='mailcom_converter.js') }}"></script>
+  <script src="{{ url_for('static', filename='paypal_protocol.js') }}"></script>
 </body>
 </html>

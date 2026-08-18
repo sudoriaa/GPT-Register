@@ -598,6 +598,43 @@ EDITABLE_FIELDS = [
         "label": "提链服务地址", "help": "填写提链服务 API 地址",
     },
     {
+        "key": "EXTRACT_LINK_BACKEND", "file": "extract_link.py", "type": "str", "group": "提链",
+        "label": "提链后端", "help": "local=直接调用本机 PayPal 提链项目；remote=兼容旧 CDK 提链 API",
+    },
+    {
+        "key": "EXTRACT_LINK_AUTO", "file": "extract_link.py", "type": "bool", "group": "提链",
+        "label": "自动提链", "help": "套餐查询确认 free + Plus 试用资格后自动进入 PayPal 提链",
+    },
+    {
+        "key": "EXTRACT_LINK_PROJECT_PATH", "file": "extract_link.py", "type": "str", "group": "提链",
+        "label": "PayPal 项目路径", "help": "本机 OAI-PayPal-Extractor 项目目录",
+    },
+    {
+        "key": "EXTRACT_LINK_PYTHON", "file": "extract_link.py", "type": "str", "group": "提链",
+        "label": "PayPal Python路径", "help": "可留空，自动使用项目 .venv；需要指定时填写 python.exe 完整路径",
+    },
+    {
+        "key": "EXTRACT_LINK_PROXY", "file": "extract_link.py", "type": "str", "group": "提链",
+        "label": "提链默认代理", "help": "可选。单次手动代理优先，其次此处代理，最后使用注册账号代理；支持 URL 或 host:port:user:pass",
+        "storage": "env", "secret": True,
+    },
+    {
+        "key": "EXTRACT_LINK_COUNTRY", "file": "extract_link.py", "type": "str", "group": "提链",
+        "label": "PayPal账单国家", "help": "默认 GB",
+    },
+    {
+        "key": "EXTRACT_LINK_PAYMENT_METHOD", "file": "extract_link.py", "type": "str", "group": "提链",
+        "label": "PayPal支付方式", "help": "默认 paypal",
+    },
+    {
+        "key": "EXTRACT_LINK_APPLY_CHECKOUT_UPDATE", "file": "extract_link.py", "type": "bool", "group": "提链",
+        "label": "更新 Checkout", "help": "按外部 PayPal 项目流程执行 Checkout 更新",
+    },
+    {
+        "key": "EXTRACT_LINK_EXPIRY_MINUTES", "file": "extract_link.py", "type": "int", "group": "提链",
+        "label": "链接有效期(分钟)", "help": "成功后倒计时，默认 60 分钟",
+    },
+    {
         "key": "EXTRACT_LINK_CDK", "file": "extract_link.py", "type": "str", "group": "提链",
         "label": "提链 CDK", "help": "创建提链任务和监听任务事件使用；成功提链扣 1 次",
         "storage": "env", "secret": True,

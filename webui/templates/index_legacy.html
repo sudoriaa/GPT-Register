@@ -352,6 +352,7 @@
     .roxy-invite-link:hover { background: #e0ebff; }
   </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='mailcom_converter.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='paypal_protocol.css') }}">
 </head>
 <body>
 <header>
@@ -382,6 +383,7 @@
     <button data-tab="codex">Codex 授权</button>
     <button data-tab="outlook">邮箱池</button>
     <button data-tab="mailcom-converter">mail.com转换</button>
+    <button data-tab="paypal-protocol">Paypal协议</button>
     <button data-tab="config">配置</button>
   </div>
 </nav>
@@ -473,7 +475,7 @@
             <span class="btn-group-title">套餐/提链</span>
             <button class="btn primary" id="btnCheckSelectedLive" data-live-check-selected="1" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
             <button class="btn primary" id="btnCheckSelectedPlans" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
-            <button class="btn good" id="btnExtractSelectedLinks" disabled title="给选中的 free(可Plus试用) 账号批量提链，类型按配置 PIX/UPI/KAKAO_PAY/IDEAL">提链</button>
+            <button class="btn good" id="btnExtractSelectedLinks" disabled title="给选中的 free(可Plus试用) 账号批量创建 Paypal协议提链；代理按 Paypal协议页设置">提链</button>
           </div>
           <div class="btn-group">
             <span class="btn-group-title">Codex</span>
@@ -643,6 +645,9 @@ mail.com / GMX / Caramail: email----登录密码
   <!-- ============ mail.com转换 ============ -->
   {% include '_mailcom_converter.html' %}
 
+  <!-- ============ Paypal协议 ============ -->
+  <div id="tab-paypal-protocol" class="hidden"></div>
+
   <!-- ============ 配置 ============ -->
   <div id="tab-config" class="hidden">
     <section class="card">
@@ -775,7 +780,7 @@ function debounce(fn, wait=250) {
 
 // ---------- Tab 切换 ----------
 function activateTab(tab, persist=true) {
-  const allowed = ['register','accounts','codex','outlook','mailcom-converter','config'];
+  const allowed = ['register','accounts','codex','outlook','mailcom-converter','paypal-protocol','config'];
   if (!allowed.includes(tab)) tab = 'register';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
   allowed.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== tab));
@@ -783,6 +788,7 @@ function activateTab(tab, persist=true) {
   if (tab === 'accounts') loadAccounts();
   if (tab === 'codex') loadCodex();
   if (tab === 'outlook') loadOutlook();
+  if (tab === 'paypal-protocol' && typeof window.loadPaypalProtocol === 'function') window.loadPaypalProtocol({silent: true});
   if (tab === 'config') loadConfig();
   if (tab === 'register') refreshJobs();
 }
@@ -1364,10 +1370,11 @@ function _extractLinkCell(r) {
     const typ = (r.extract_link_type || '').toUpperCase();
     const link = r.extract_link_long_url || r.extract_link_copy_paste || '';
     const qr = r.extract_link_image_url_png || r.extract_link_image_url_svg || '';
-    const expire = _fmtExtractExpire(r.extract_link_expires_at || '');
+    const expireRaw = r.extract_link_expires_at || '';
+    const expire = _fmtExtractExpire(expireRaw);
     const copy = link ? cbtn('复制提链', link, 'extract-link-btn extract-copy') : '';
     const qrBtn = qr ? `<button class="extract-link-btn extract-qr" data-qr-url="${esc(qr)}" title="打开支付二维码图片">查看二维码</button>` : '';
-    const expireHtml = expire ? `<div class="extract-link-expire" title="支付链接过期时间">支付到期：${esc(expire)}</div>` : '';
+    const expireHtml = expire ? `<div class="extract-link-expire" title="支付链接过期时间">剩余 <span class="paypal-protocol-countdown" data-paypal-countdown data-paypal-expires-at="${esc(expireRaw)}">计算中…</span> · 到期 ${esc(expire)}</div>` : '';
     return `<div class="extract-link-cell"><span class="pill status-success" title="${title || esc(link)}">提链成功${typ ? '(' + esc(typ) + ')' : ''}</span>${copy}${qrBtn}${expireHtml}</div>`;
   }
   if (s === 'failed') {
@@ -1383,7 +1390,7 @@ function _extractLinkAction(r) {
   const eligible = plan === 'free' && !!r.plus_trial_eligible;
   if (!eligible) return '';
   const failedReason = s === 'failed' ? (r.extract_link_error || r.extract_link_message || '') : '';
-  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 PIX/UPI/KAKAO_PAY/IDEAL 提链任务')}">提链</button>`;
+  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 Paypal协议提链任务')}">提链</button>`;
 }
 function _codexAction(r) {
   const s = r.codex_status || '';
@@ -1863,7 +1870,7 @@ async function extractOneLink(id, btn) {
     showToast('仅支持 free(可Plus试用) 账号提链');
     return;
   }
-  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用 PIX/UPI/KAKAO_PAY/IDEAL，成功会消耗 1 次 CDK。`)) return;
+   if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链会使用该账号 AT；代理按 Paypal协议页设置（本次覆盖 > 全局自定义 > 注册代理）。`)) return;
   const old = btn.textContent;
   btn.disabled = true;
   btn.textContent = '提链中…';
@@ -1888,7 +1895,7 @@ async function extractSelectedLinks() {
   const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
   const eligible = selected.filter(a => (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
   if (!eligible.length) { showToast('选中账号里没有 free(可Plus试用)'); return; }
-  if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
+   if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过；代理按 Paypal协议页设置。`)) return;
   const btn = $('#btnExtractSelectedLinks');
   const old = btn.textContent;
   btn.disabled = true;
@@ -3222,5 +3229,6 @@ setInterval(loadSummary, 5000);
 setInterval(() => { if (!$('#tab-accounts').classList.contains('hidden')) pollAccountPlanStatuses(); }, 2000);
 </script>
 <script src="{{ url_for('static', filename='mailcom_converter.js') }}"></script>
+<script src="{{ url_for('static', filename='paypal_protocol.js') }}"></script>
 </body>
 </html>

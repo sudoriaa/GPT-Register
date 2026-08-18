@@ -17,7 +17,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -1811,6 +1811,20 @@ def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str =
         row["extract_link_completed_at"] = None
         row["extract_link_error"] = None
         row["extract_link_message"] = "已入队"
+        row["extract_link_proxy_source"] = None
+        for key in (
+            "extract_link_job_id",
+            "extract_link_cdk_remaining",
+            "extract_link_long_url",
+            "extract_link_copy_paste",
+            "extract_link_image_url_png",
+            "extract_link_image_url_svg",
+            "extract_link_payment_method",
+            "extract_link_payment_link_type",
+            "extract_link_expires_at",
+            "extract_link_result_json",
+        ):
+            row[key] = None
         row["updated_at"] = now
         _save_accounts(accounts)
         return True
@@ -1856,6 +1870,9 @@ def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
             row["extract_link_type"] = result.get("link_type")
         if result.get("cdk_remaining") is not None:
             row["extract_link_cdk_remaining"] = result.get("cdk_remaining")
+        if result.get("proxy_source") is not None:
+            source = str(result.get("proxy_source") or "none").strip().lower()
+            row["extract_link_proxy_source"] = source if source in {"custom", "global", "registration", "none"} else "none"
         payload = result.get("result") if isinstance(result.get("result"), dict) else {}
         if payload:
             row["extract_link_long_url"] = payload.get("long_url")
@@ -1891,6 +1908,135 @@ def recover_interrupted_extract_links() -> int:
         if recovered:
             _save_accounts(accounts)
         return recovered
+
+
+def account_extract_link_is_fresh(acc_id: int) -> bool:
+    """Whether an account already has a successful, unexpired payment link."""
+    with _LOCK:
+        row = next((r for r in _load_accounts() if int(r.get("id") or 0) == int(acc_id)), None)
+        if not row or str(row.get("extract_link_status") or "").lower() != "success":
+            return False
+        if not str(row.get("extract_link_long_url") or row.get("extract_link_copy_paste") or "").strip():
+            return False
+        try:
+            expires_at = datetime.fromisoformat(str(row.get("extract_link_expires_at") or "").replace("Z", "+00:00"))
+            now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.now()
+            return expires_at > now
+        except (TypeError, ValueError):
+            return False
+
+
+def _scrub_extract_public_text(value: Any, row: dict) -> str:
+    text = str(value or "")
+    for key in (
+        "access_token", "refresh_token", "password", "chatgpt_password",
+        "registration_proxy", "proxy_used",
+    ):
+        secret = str(row.get(key) or "")
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return re.sub(
+        r"(?i)(https?|socks5?h?)://[^\s/@:]+:[^\s/@]+@",
+        r"\1://***:***@",
+        text,
+    )[:2000]
+
+
+def list_paypal_protocol_links(
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    status: str | None = None,
+    q: str | None = None,
+) -> dict:
+    """Return a credential-free snapshot for the independent PayPal page."""
+    wanted = str(status or "all").strip().lower()
+    query = str(q or "").strip().lower()
+    with _LOCK:
+        rows = [row for row in _load_accounts() if row.get("extract_link_status")]
+        rows.sort(key=lambda row: int(row.get("id") or 0), reverse=True)
+        items: list[dict] = []
+        now = datetime.now()
+        for row in rows:
+            raw_status = str(row.get("extract_link_status") or "idle").strip().lower()
+            expires_at = str(row.get("extract_link_expires_at") or "").strip()
+            if raw_status == "success" and not expires_at:
+                # Older successful records predate the explicit expiry field;
+                # preserve the same 60-minute UI contract from completion time.
+                base_value = row.get("extract_link_completed_at") or row.get("extract_link_checked_at")
+                try:
+                    base_stamp = datetime.fromisoformat(str(base_value).replace("Z", "+00:00"))
+                    expires_at = (base_stamp + timedelta(minutes=60)).isoformat(timespec="seconds")
+                except (TypeError, ValueError):
+                    expires_at = ""
+            expired = False
+            remaining_seconds = None
+            if expires_at:
+                try:
+                    stamp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                    current = datetime.now(stamp.tzinfo) if stamp.tzinfo else now
+                    remaining_seconds = max(0, int((stamp - current).total_seconds()))
+                    expired = remaining_seconds <= 0
+                except (TypeError, ValueError):
+                    remaining_seconds = None
+            display_status = "expired" if raw_status == "success" and expired else raw_status
+            if wanted not in {"", "all"} and display_status != wanted:
+                continue
+            email = str(row.get("email") or "")
+            link = str(row.get("extract_link_long_url") or row.get("extract_link_copy_paste") or "")
+            if query and query not in f"{email}\n{link}\n{display_status}".lower():
+                continue
+            item = {
+                "id": row.get("id"),
+                "email": email,
+                "status": display_status,
+                "extract_link_status": raw_status,
+                "extract_link_ok": bool(row.get("extract_link_ok")),
+                "extract_link_trigger": row.get("extract_link_trigger"),
+                "extract_link_type": row.get("extract_link_type"),
+                "extract_link_queued_at": row.get("extract_link_queued_at"),
+                "extract_link_started_at": row.get("extract_link_started_at"),
+                "extract_link_completed_at": row.get("extract_link_completed_at"),
+                "extract_link_checked_at": row.get("extract_link_checked_at"),
+                "extract_link_job_id": row.get("extract_link_job_id"),
+                "extract_link_long_url": row.get("extract_link_long_url"),
+                "extract_link_copy_paste": row.get("extract_link_copy_paste"),
+                "extract_link_image_url_png": row.get("extract_link_image_url_png"),
+                "extract_link_image_url_svg": row.get("extract_link_image_url_svg"),
+                "extract_link_payment_method": row.get("extract_link_payment_method"),
+                "extract_link_payment_link_type": row.get("extract_link_payment_link_type"),
+                "extract_link_expires_at": expires_at or None,
+                "extract_link_proxy_source": row.get("extract_link_proxy_source"),
+                "expired": expired,
+                "remaining_seconds": remaining_seconds,
+                "has_registration_proxy": bool(row.get("registration_proxy") or row.get("proxy_used")),
+            }
+            error = _scrub_extract_public_text(row.get("extract_link_error"), row)
+            message = _scrub_extract_public_text(row.get("extract_link_message"), row)
+            if error:
+                item["extract_link_error"] = error
+            if message:
+                item["extract_link_message"] = message
+            items.append({key: value for key, value in item.items() if value is not None})
+
+        total = len(items)
+        counts: dict[str, int] = {}
+        for item in items:
+            item_status = str(item.get("status") or "unknown")
+            counts[item_status] = counts.get(item_status, 0) + 1
+        safe_offset = max(0, int(offset or 0))
+        safe_limit = max(1, min(500, int(limit or 100)))
+        page = items[safe_offset:safe_offset + safe_limit]
+        revision_data = json.dumps(page, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        revision = hashlib.sha1(revision_data.encode("utf-8")).hexdigest()[:12]
+        return {
+            "items": page,
+            "total": total,
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "counts": counts,
+            "revision": f"{total}:{revision}",
+        }
 
 
 def _account_matches_query(row: dict, q: str | None) -> bool:

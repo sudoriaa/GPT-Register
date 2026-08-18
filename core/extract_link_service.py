@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
+import re
+import subprocess
+import sys
 import threading
-import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from urllib.parse import quote, urlencode
+from datetime import datetime, timedelta
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 try:
@@ -47,13 +51,38 @@ def _int_setting(name: str, default: int, lower: int, upper: int) -> int:
     return max(lower, min(upper, value))
 
 
-SUPPORTED_LINK_TYPES = {"pix", "upi", "kakao_pay", "ideal"}
+def _bool_setting(name: str, default: bool = False) -> bool:
+    value = _runtime_setting(name, default)
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def backend_name() -> str:
+    value = str(_runtime_setting("EXTRACT_LINK_BACKEND", "local") or "local").strip().lower()
+    if value not in {"local", "remote"}:
+        raise ValueError("EXTRACT_LINK_BACKEND 仅支持 local / remote")
+    return value
+
+
+def auto_extract_enabled() -> bool:
+    return _bool_setting("EXTRACT_LINK_AUTO", False)
+
+
+SUPPORTED_LINK_TYPES = {"paypal", "pix", "upi", "kakao_pay", "ideal"}
 
 
 def _link_type(value: str | None = None) -> str:
-    t = str(value or _runtime_setting("EXTRACT_LINK_TYPE", "pix") or "pix").strip().lower()
+    default = "paypal" if backend_name() == "local" else "pix"
+    t = str(value or _runtime_setting("EXTRACT_LINK_TYPE", default) or default).strip().lower()
     if t not in SUPPORTED_LINK_TYPES:
-        raise ValueError("提链类型无效，仅支持 pix / upi / kakao_pay / ideal")
+        raise ValueError("提链类型无效，仅支持 paypal / pix / upi / kakao_pay / ideal")
+    if backend_name() == "local":
+        return "paypal"
+    if t == "paypal":
+        # The legacy CDK service has no PayPal payment-method type; retain
+        # its historical PIX default when that backend is selected.
+        return "pix"
     return t
 
 
@@ -69,6 +98,18 @@ def _cdk(value: str | None = None) -> str:
     if not cdk:
         raise ValueError("EXTRACT_LINK_CDK/CDK 为空")
     return cdk
+
+
+def public_settings() -> dict:
+    """返回前端可展示的提链设置，绝不返回代理认证或 CDK。"""
+    return {
+        "backend": backend_name(),
+        "auto_extract": auto_extract_enabled(),
+        "custom_proxy_configured": bool(str(_runtime_setting("EXTRACT_LINK_PROXY", "") or "").strip()),
+        "country": str(_runtime_setting("EXTRACT_LINK_COUNTRY", "GB") or "GB").strip().upper(),
+        "payment_method": str(_runtime_setting("EXTRACT_LINK_PAYMENT_METHOD", "paypal") or "paypal").strip().lower(),
+        "expiry_minutes": _int_setting("EXTRACT_LINK_EXPIRY_MINUTES", 60, 1, 24 * 60),
+    }
 
 
 _WORKERS = _int_setting("EXTRACT_LINK_WORKERS", 3, 1, 16)
@@ -87,7 +128,259 @@ def _session():
     return curl_requests.Session()
 
 
+def _normalize_proxy(value: str | None) -> str:
+    """Convert registration copy format to a proxy URL accepted by extractor."""
+    text = str(value or "").strip().splitlines()[0].strip() if str(value or "").strip() else ""
+    if not text:
+        return ""
+    if "://" in text:
+        try:
+            parsed = urlsplit(text)
+            scheme = parsed.scheme.lower()
+            if scheme == "socks":
+                scheme = "socks5"
+            if scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+                return ""
+            host = parsed.hostname
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            auth = ""
+            if parsed.username is not None:
+                auth = quote(unquote(parsed.username), safe="")
+                if parsed.password is not None:
+                    auth += ":" + quote(unquote(parsed.password), safe="")
+                auth += "@"
+            port = f":{parsed.port}" if parsed.port else ""
+            return urlunsplit((scheme, auth + host + port, parsed.path, parsed.query, ""))
+        except (TypeError, ValueError):
+            return ""
+
+    # Account list copy format is host:port:username:password. Password may
+    # contain colons, so split only three times.
+    parts = text.split(":", 3)
+    if len(parts) == 4 and parts[1].isdigit() and parts[0]:
+        host, port, username, password = parts
+        scheme = "socks5h" if any(x in host.lower() for x in ("kookeey", "iproyal", "iprocket")) else "http"
+        return (
+            f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}"
+            f"@{host}:{port}"
+        )
+    # Also accept host:port with no authentication for custom gateways.
+    if len(parts) == 2 and parts[1].isdigit() and parts[0]:
+        return f"http://{parts[0]}:{parts[1]}"
+    return ""
+
+
+def _account_proxy(account_id: int) -> str:
+    try:
+        row = db.get_account(int(account_id)) or {}
+    except Exception:
+        row = {}
+    return _normalize_proxy(row.get("registration_proxy") or row.get("proxy_used"))
+
+
+def resolve_extract_proxy(account_id: int, override: str | None = None) -> tuple[str, str]:
+    """Resolve proxy precedence: request override > global > registration."""
+    raw_override = str(override or "").strip()
+    override_value = _normalize_proxy(raw_override)
+    if raw_override and not override_value:
+        raise ValueError("本次提链代理格式无效")
+    raw_global = str(_runtime_setting("EXTRACT_LINK_PROXY", "") or "").strip()
+    global_value = _normalize_proxy(raw_global)
+    if raw_global and not global_value:
+        raise ValueError("全局提链代理格式无效")
+    candidates = (
+        ("custom", override_value),
+        ("global", global_value),
+        ("registration", _account_proxy(account_id)),
+    )
+    for source, value in candidates:
+        if value:
+            return value, source
+    return "", "none"
+
+
+def _expiry_iso() -> str:
+    minutes = _int_setting("EXTRACT_LINK_EXPIRY_MINUTES", 60, 1, 24 * 60)
+    return (datetime.now() + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
+def _redact_text(value: object, *, access_token: str = "", proxy: str = "") -> str:
+    text = str(value or "")
+    for secret in (str(access_token or ""), str(proxy or "")):
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(?i)(https?|socks5?h?)://[^\s/@:]+:[^\s/@]+@", r"\1://***:***@", text)
+    # Worker errors can contain a full token in a response preview; keep only
+    # a bounded diagnostic and never persist a raw credential.
+    return text[:500]
+
+
+def _is_paypal_approval_url(value: object) -> bool:
+    """Accept only the final PayPal billing-agreement approval URL."""
+    try:
+        parsed = urlsplit(str(value or "").strip())
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not (host == "paypal.com" or host.endswith(".paypal.com")):
+            return False
+        if parsed.path.rstrip("/").lower() != "/agreements/approve":
+            return False
+        ba_token = (parse_qs(parsed.query).get("ba_token") or [""])[0]
+        return str(ba_token).startswith("BA-")
+    except Exception:
+        return False
+
+
+_LOCAL_WORKER = r'''
+import json, sys
+
+def main():
+    payload = json.load(sys.stdin)
+    try:
+        from payment_link_extractor.application import extract_payment_link
+        from payment_link_extractor.models import ExtractionConfig
+        cfg = ExtractionConfig(
+            access_token=str(payload.get("access_token") or ""),
+            checkout_proxy=str(payload.get("checkout_proxy") or ""),
+            update_proxy=str(payload.get("update_proxy") or payload.get("checkout_proxy") or ""),
+            stripe_hcaptcha_token=str(payload.get("stripe_hcaptcha_token") or ""),
+            country=str(payload.get("country") or "GB"),
+            payment_method=str(payload.get("payment_method") or "paypal"),
+            apply_checkout_update=bool(payload.get("apply_checkout_update", True)),
+            verbose=False,
+            oaics_only=False,
+        )
+        result = extract_payment_link(cfg)
+        data = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+        print(json.dumps({"ok": True, "result": data}, ensure_ascii=False))
+    except BaseException as exc:
+        print(json.dumps({
+            "ok": False,
+            "status_code": getattr(exc, "status_code", None),
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:1200],
+        }, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _local_python(project_path: Path) -> str:
+    configured = str(_runtime_setting("EXTRACT_LINK_PYTHON", "") or "").strip()
+    candidates = [
+        configured,
+        str(project_path / ".venv" / "Scripts" / "python.exe"),
+        str(project_path / ".venv" / "bin" / "python"),
+        sys.executable,
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return sys.executable
+
+
+def _normalize_local_result(raw: dict, *, link_type: str) -> dict:
+    """Map the standalone extractor result to the account-safe result shape."""
+    source = raw if isinstance(raw, dict) else {}
+    paypal_field = str(source.get("paypal_url") or "").strip()
+    link = paypal_field or source.get("provider_url") or ""
+    # New extractor builds expose paypal_url and are strict-checked here as a
+    # final guard. Older/fixture adapters may expose only provider_url; the
+    # standalone project has already resolved and validated that field.
+    if backend_name() == "local" and str(link_type or "").lower() == "paypal" and paypal_field and not _is_paypal_approval_url(paypal_field):
+        raise RuntimeError("PayPal 审批链接未返回或格式无效")
+    # Legacy remote providers may return non-PayPal links; preserve their
+    # historical fallback behavior when the local PayPal backend is not used.
+    if backend_name() == "local" and not str(link or "").strip():
+        raise RuntimeError("PayPal 审批链接未返回")
+    if not link:
+        link = source.get("stripe_redirect_url") or source.get("long_url") or source.get("copy_paste") or ""
+    normalized_link = str(link or "")
+    payload = {
+        # The local backend is accepted only after the PayPal approval URL
+        # check above; keep both copy fields pointed at that validated URL.
+        "long_url": normalized_link if backend_name() == "local" else str(source.get("long_url") or normalized_link or ""),
+        "copy_paste": normalized_link if backend_name() == "local" else str(source.get("copy_paste") or normalized_link or ""),
+        "image_url_png": str(source.get("image_url_png") or ""),
+        "image_url_svg": str(source.get("image_url_svg") or ""),
+        "payment_method": str(source.get("payment_method") or "paypal"),
+        "payment_link_type": str(source.get("payment_link_type") or link_type or "paypal"),
+        "provider_url": normalized_link if backend_name() == "local" else str(source.get("provider_url") or source.get("paypal_url") or normalized_link or ""),
+        "stripe_redirect_url": str(source.get("stripe_redirect_url") or ""),
+        "checkout_session_id": str(source.get("checkout_session_id") or ""),
+        "session_kind": str(source.get("session_kind") or ""),
+        "billing_country": str(source.get("billing_country") or ""),
+        "currency": str(source.get("currency") or ""),
+        "amount_due": source.get("amount_due"),
+        "amount_due_minor": source.get("amount_due_minor"),
+        "cdk_remaining": source.get("cdk_remaining"),
+        "expires_at": _expiry_iso(),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def _run_local_extract(*, access_token: str, link_type: str, proxy: str) -> dict:
+    project_path = Path(str(_runtime_setting("EXTRACT_LINK_PROJECT_PATH", "") or "").strip()).expanduser()
+    if not project_path.exists():
+        raise ValueError("EXTRACT_LINK_PROJECT_PATH 不存在")
+    python_exe = _local_python(project_path)
+    payload = {
+        "access_token": access_token,
+        "checkout_proxy": proxy,
+        "update_proxy": proxy,
+        "country": str(_runtime_setting("EXTRACT_LINK_COUNTRY", "GB") or "GB").strip().upper(),
+        "payment_method": str(_runtime_setting("EXTRACT_LINK_PAYMENT_METHOD", "paypal") or "paypal").strip().lower(),
+        "apply_checkout_update": _bool_setting("EXTRACT_LINK_APPLY_CHECKOUT_UPDATE", True),
+    }
+    timeout = _int_setting("EXTRACT_LINK_EVENT_TIMEOUT", 180, 30, 900)
+    env = os.environ.copy()
+    # The standalone project defaults to routing public proxies through its
+    # optional bridge. Direct in-process integration should use the account's
+    # selected proxy as-is unless the user explicitly configures a bridge.
+    env.setdefault("OPLL_CHAIN_ALL_PROXIES", "false")
+    env["OPLL_CHAIN_ALL_PROXIES"] = str(env.get("EXTRACT_LINK_CHAIN_ALL_PROXIES", "false"))
+    try:
+        completed = subprocess.run(
+            [python_exe, "-c", _LOCAL_WORKER],
+            input=json.dumps(payload, ensure_ascii=False),
+            text=True,
+            capture_output=True,
+            cwd=str(project_path),
+            env=env,
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"本地 PayPal 提链超时（>{timeout}s）") from exc
+    stdout = (completed.stdout or "").splitlines()
+    response = None
+    for line in reversed(stdout):
+        try:
+            candidate = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(candidate, dict) and ("ok" in candidate or "error" in candidate):
+            response = candidate
+            break
+    if not isinstance(response, dict):
+        detail = (completed.stderr or completed.stdout or "本地提链进程无 JSON 输出").strip()
+        raise RuntimeError(_redact_text(detail, access_token=access_token, proxy=proxy))
+    if not response.get("ok"):
+        status_code = response.get("status_code")
+        error = str(response.get("error") or "本地 PayPal 提链失败")
+        if str(status_code) == "401" or re.search(r"(?i)(?:http|status|code)[^\d]{0,8}401|unauthori[sz]ed|token.{0,20}(?:expired|invalid)", error):
+            raise RuntimeError("AT失效")
+        raise RuntimeError(_redact_text(error, access_token=access_token, proxy=proxy))
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("本地 PayPal 提链未返回结果")
+    return _normalize_local_result(result, link_type=link_type)
+
+
 def query_cdk(*, cdk: str | None = None) -> dict:
+    if backend_name() == "local":
+        return {"backend": "local", "configured": True, "cdk_required": False, "remaining": None}
     base = _api_base()
     code = _cdk(cdk)
     timeout = _int_setting("EXTRACT_LINK_REQUEST_TIMEOUT", 30, 5, 300)
@@ -266,13 +559,53 @@ def _format_failure_reason(exc: Exception, logs: list[str] | None = None, last_e
     return reason[:500]
 
 
-def _run_extract(*, account_id: int, email: str, access_token: str, link_type: str, cdk: str, trigger: str) -> dict:
+def _run_extract(
+    *,
+    account_id: int,
+    email: str,
+    access_token: str,
+    link_type: str,
+    cdk: str | None,
+    trigger: str,
+    proxy: str | None = None,
+    proxy_source: str = "none",
+) -> dict:
     logs: list[str] = []
     last_event = None
     try:
         if not db.mark_account_extract_running(account_id):
             return {"ok": False, "error": "账号已删除或提链状态已被重置"}
-        job = _create_extract_job(token=access_token, link_type=link_type, cdk=cdk)
+        if backend_name() == "local":
+            selected_proxy = str(proxy or "").strip()
+            if not selected_proxy:
+                raise ValueError("没有可用提链代理：请配置自定义代理或先保存注册代理")
+            job_id = f"local-{uuid.uuid4().hex}"
+            db.update_account_extract(account_id, {
+                "ok": False,
+                "status": "running",
+                "job_id": job_id,
+                "link_type": link_type,
+                "message": "本地 PayPal 提链执行中",
+                "proxy_source": proxy_source,
+            })
+            payload = _run_local_extract(access_token=access_token, link_type=link_type, proxy=selected_proxy)
+            final = {
+                "ok": True,
+                "status": "success",
+                "job_id": job_id,
+                "link_type": link_type,
+                "result": payload,
+                "message": "提链成功",
+                "checked_at": datetime.now().isoformat(timespec="seconds"),
+                "proxy_source": proxy_source,
+            }
+            db.update_account_extract(account_id, final)
+            logger.info("[提链] 本地成功: %s type=%s", email, link_type)
+            return final
+
+        # Legacy remote CDK/SSE backend.
+        code = _cdk(cdk)
+        job = _create_extract_job(token=access_token, link_type=link_type, cdk=code)
         job_id = str(job.get("job_id") or "")
         db.update_account_extract(account_id, {
             "ok": False,
@@ -281,8 +614,9 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
             "link_type": link_type,
             "message": "提链任务已创建，等待结果",
             "cdk_remaining": job.get("cdk_remaining"),
+            "proxy_source": proxy_source,
         })
-        for event, data in _iter_sse_events(job_id=job_id, cdk=cdk):
+        for event, data in _iter_sse_events(job_id=job_id, cdk=code):
             last_event = {"event": event, "data": data}
             if event == "log":
                 msg = str((data or {}).get("message") or "")[:300]
@@ -299,7 +633,8 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
                 result = (data or {}).get("result") if isinstance(data, dict) else None
                 if not isinstance(result, dict):
                     result = {}
-                final = {"ok": True, "status": "success", "job_id": job_id, "link_type": link_type, "result": result, "logs": logs}
+                result = _normalize_local_result(result, link_type=link_type)
+                final = {"ok": True, "status": "success", "job_id": job_id, "link_type": link_type, "result": result, "logs": logs, "proxy_source": proxy_source}
                 db.update_account_extract(account_id, final)
                 logger.info("[提链] 成功: %s type=%s job=%s", email, link_type, job_id)
                 return final
@@ -311,6 +646,9 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
         raise RuntimeError(f"提链事件流结束但未返回 result: {last_event}")
     except Exception as exc:
         reason = _format_failure_reason(exc, logs=logs, last_event=last_event)
+        reason = _redact_text(reason, access_token=access_token, proxy=proxy or "")
+        if getattr(exc, "status_code", None) == 401 or re.search(r"(?i)(?:http|status|code)[^\d]{0,8}401|unauthori[sz]ed|token.{0,20}(?:expired|invalid)", reason):
+            reason = "AT失效"
         result = {
             "ok": False,
             "status": "failed",
@@ -328,17 +666,51 @@ def _run_extract(*, account_id: int, email: str, access_token: str, link_type: s
         _QUEUE_SLOTS.release()
 
 
-def enqueue_account_extract(*, account_id: int, email: str, access_token: str, trigger: str = "manual", link_type: str | None = None, cdk: str | None = None) -> dict:
+def enqueue_account_extract(
+    *,
+    account_id: int,
+    email: str,
+    access_token: str,
+    trigger: str = "manual",
+    link_type: str | None = None,
+    cdk: str | None = None,
+    proxy: str | None = None,
+) -> dict:
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "error": "提链队列已满"}
     try:
         lt = _link_type(link_type)
-        code = _cdk(cdk)
+        code = None if backend_name() == "local" else _cdk(cdk)
+        selected_proxy, proxy_source = resolve_extract_proxy(account_id, proxy)
+        if backend_name() == "local" and not selected_proxy:
+            _QUEUE_SLOTS.release()
+            return {
+                "accepted": False,
+                "busy": False,
+                "error": "没有可用提链代理：请填写本次/全局代理，或先保存注册代理",
+            }
         if not db.claim_account_extract(account_id, trigger=trigger, link_type=lt):
             _QUEUE_SLOTS.release()
             return {"accepted": False, "busy": True, "error": "该账号正在提链中"}
-        fut = _EXECUTOR.submit(_run_extract, account_id=account_id, email=email, access_token=access_token, link_type=lt, cdk=code, trigger=trigger)
-        return {"accepted": True, "busy": False, "future": fut, "link_type": lt}
+        fut = _EXECUTOR.submit(
+            _run_extract,
+            account_id=account_id,
+            email=email,
+            access_token=access_token,
+            link_type=lt,
+            cdk=code,
+            trigger=trigger,
+            proxy=selected_proxy,
+            proxy_source=proxy_source,
+        )
+        return {
+            "accepted": True,
+            "busy": False,
+            "future": fut,
+            "link_type": lt,
+            "backend": backend_name(),
+            "proxy_source": proxy_source,
+        }
     except Exception:
         _QUEUE_SLOTS.release()
         raise

@@ -77,6 +77,52 @@ def _registration_recheck_delay() -> float:
     return _float_setting("PLAN_CHECK_REGISTRATION_RECHECK_DELAY", 0.0, 0.0, 30.0)
 
 
+def _maybe_enqueue_auto_extract(
+    *,
+    account_id: int,
+    email: str,
+    access_token: str,
+    result: dict,
+) -> None:
+    """Queue PayPal extraction after a confirmed eligible plan result."""
+    if not (
+        bool(result.get("ok"))
+        and str(result.get("current_plan_type") or result.get("plan_type") or "").strip().lower() == "free"
+        and bool(result.get("plus_trial_eligible"))
+    ):
+        return
+    try:
+        from core import extract_link_service
+
+        if not extract_link_service.auto_extract_enabled():
+            return
+        latest = db.get_account(account_id) or {}
+        latest_token = str(latest.get("access_token") or "").strip()
+        # A token may have been refreshed while the plan request was in
+        # flight. Never enqueue the stale AT captured by the old task.
+        if not latest_token or db.access_token_fingerprint(latest_token) != db.access_token_fingerprint(access_token):
+            logger.info("[提链] 自动入队已跳过，账号 AT 已变化: %s", email)
+            return
+        plan = str(latest.get("current_plan_type") or latest.get("plan_type") or "").strip().lower()
+        if plan != "free" or not bool(latest.get("plus_trial_eligible")):
+            return
+        if db.account_extract_link_is_fresh(account_id):
+            logger.info("[提链] 已有未过期链接，跳过自动提链: %s", email)
+            return
+        queued = extract_link_service.enqueue_account_extract(
+            account_id=account_id,
+            email=email,
+            access_token=latest_token,
+            trigger="plan_auto",
+        )
+        if queued.get("accepted"):
+            logger.info("[提链] Plus 试用资格确认后已自动入队: %s", email)
+        elif not queued.get("busy"):
+            logger.warning("[提链] 自动入队失败: %s, %s", email, queued.get("error") or "未知错误")
+    except Exception as exc:
+        logger.warning("[提链] 自动入队异常: %s, %s: %s", email, type(exc).__name__, str(exc)[:180])
+
+
 def _run_plan_check(
     *,
     account_id: int,
@@ -177,12 +223,19 @@ def _run_plan_check(
                 result = dict(result)
                 result["oaics"] = oaics_result
 
-        db.update_account_plan_check(
+        plan_state_updated = db.update_account_plan_check(
             acc_id=account_id,
             result=result,
             run_id=run_id,
             expected_access_token_fingerprint=token_fingerprint,
         )
+        if plan_state_updated:
+            _maybe_enqueue_auto_extract(
+                account_id=account_id,
+                email=email,
+                access_token=access_token,
+                result=result,
+            )
         if result.get("ok"):
             logger.info(
                 "[Plan] 后台查询成功: %s, plan=%s, plus_trial=%s, trigger=%s",

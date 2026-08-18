@@ -134,6 +134,10 @@ def _compact_account_for_list(row: dict) -> dict:
         "oaics_status", "oaics_ok", "oaics_checked_at", "oaics_error",
         "oaics_session_kind", "oaics_method_status", "oaics_method_available",
         "plan_check_status", "codex_status",
+        # PayPal 协议提链状态（不包含 AT、密码或代理认证）。
+        "extract_link_status", "extract_link_ok", "extract_link_trigger", "extract_link_type",
+        "extract_link_queued_at", "extract_link_started_at", "extract_link_completed_at",
+        "extract_link_checked_at", "extract_link_job_id", "extract_link_proxy_source",
         # 只保留独立的取消套餐任务状态；账号列表不再展示订阅查询结果。
         "subscription_cancel_status", "subscription_cancel_error",
         "subscription_cancel_queued_at", "subscription_cancel_started_at",
@@ -164,6 +168,8 @@ def _compact_account_for_list(row: dict) -> dict:
         "plus_mail_status", "plus_mail_hit_subject", "plus_mail_checked_at",
         # Codex 状态提示。
         "codex_error",
+        # 结果链接和提链错误只在独立 Paypal协议接口中按需返回。
+        "extract_link_payment_method", "extract_link_payment_link_type",
     )
     for key in optional_keys:
         value = row.get(key)
@@ -1416,8 +1422,9 @@ def create_app(auth_code: str | None = None) -> Flask:
         return plan == "free" and bool(acc.get("plus_trial_eligible"))
 
     @app.post("/api/accounts/extract-link")
+    @app.post("/api/paypal-protocol/extract")
     def api_account_extract_link():
-        """单账号提链。Body {account_id|id, link_type?, cdk?}。"""
+        """单账号 PayPal 提链。Body {account_id|id, proxy?, link_type?, cdk?}。"""
         data = request.get_json(silent=True) or {}
         acc_id = data.get("account_id") or data.get("id")
         try:
@@ -1439,6 +1446,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                 trigger="manual",
                 link_type=data.get("link_type"),
                 cdk=data.get("cdk"),
+                proxy=data.get("proxy") if "proxy" in data else None,
             )
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
@@ -1449,8 +1457,9 @@ def create_app(auth_code: str | None = None) -> Flask:
         return jsonify({"ok": True, "started": True, **{k: v for k, v in queued.items() if k != "future"}}), 202
 
     @app.post("/api/accounts/extract-link-bulk")
+    @app.post("/api/paypal-protocol/extract-bulk")
     def api_accounts_extract_link_bulk():
-        """批量提链。Body {account_ids:[...], link_type?, cdk?}。"""
+        """批量 PayPal 提链。Body {account_ids:[...], proxy?, link_type?, cdk?}。"""
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
         if not isinstance(ids, list) or not ids:
@@ -1492,6 +1501,7 @@ def create_app(auth_code: str | None = None) -> Flask:
                     trigger="manual_bulk",
                     link_type=data.get("link_type"),
                     cdk=data.get("cdk"),
+                    proxy=data.get("proxy") if "proxy" in data else None,
                 )
             except Exception as exc:
                 failed.append({"id": acc_id, "email": email, "error": f"{type(exc).__name__}: {exc}"})
@@ -1514,6 +1524,81 @@ def create_app(auth_code: str | None = None) -> Flask:
             "skipped": skipped,
             "skipped_count": len(skipped),
         }), 202
+
+    @app.get("/api/paypal-protocol")
+    def api_paypal_protocol():
+        """Paypal协议独立页面数据；只返回脱敏提链结果和倒计时。"""
+        status = str(request.args.get("status", default="all") or "all").strip().lower()
+        q = str(request.args.get("q", default="") or "").strip()
+        limit = request.args.get("limit", default=100, type=int)
+        offset = request.args.get("offset", default=0, type=int)
+        page_arg = request.args.get("page", default=None, type=int)
+        page_size_arg = request.args.get("page_size", default=None, type=int)
+        if page_size_arg is not None:
+            limit = page_size_arg
+        if page_arg is not None:
+            offset = (max(1, page_arg) - 1) * max(1, limit or 100)
+        limit = int(limit or 100)
+        offset = int(offset or 0)
+        if status not in {"all", "queued", "running", "success", "failed", "expired", "stopped"}:
+            return jsonify({"ok": False, "error": "status 参数无效"}), 400
+        snapshot = db.list_paypal_protocol_links(
+            limit=max(1, min(500, limit)),
+            offset=max(0, offset),
+            status=status,
+            q=q,
+        )
+        snapshot.update({
+            "ok": True,
+            "page": max(1, int(offset // max(1, snapshot.get("limit") or 1) + 1)),
+            "page_size": snapshot.get("limit"),
+            "settings": extract_link_service.public_settings(),
+            "queue": extract_link_service.queue_settings(),
+        })
+        return jsonify(snapshot)
+
+    @app.get("/api/paypal-protocol/settings")
+    def api_paypal_protocol_settings():
+        """读取 Paypal协议页设置；代理只返回是否已配置。"""
+        return jsonify({
+            "ok": True,
+            "settings": extract_link_service.public_settings(),
+            "queue": extract_link_service.queue_settings(),
+        })
+
+    @app.post("/api/paypal-protocol/settings")
+    def api_paypal_protocol_settings_update():
+        """更新自动提链开关和全局提链代理，不回显代理值。"""
+        data = request.get_json(silent=True) or {}
+        updates = {}
+        if "auto_extract" in data or "enabled" in data:
+            value = data.get("auto_extract", data.get("enabled"))
+            if isinstance(value, str):
+                value = value.strip().lower() in {"1", "true", "yes", "on", "y"}
+            if not isinstance(value, bool):
+                return jsonify({"ok": False, "error": "auto_extract 必须是布尔值"}), 400
+            updates["EXTRACT_LINK_AUTO"] = value
+        if "proxy" in data or "default_proxy" in data:
+            proxy = data.get("proxy", data.get("default_proxy"))
+            if proxy is None:
+                proxy = ""
+            if not isinstance(proxy, str) or len(proxy) > 2000:
+                return jsonify({"ok": False, "error": "proxy 必须是字符串且长度不超过 2000"}), 400
+            updates["EXTRACT_LINK_PROXY"] = proxy.strip()
+        if not updates:
+            return jsonify({"ok": False, "error": "没有可更新的设置"}), 400
+        try:
+            result = config_editor.update_config(updates)
+            import config as _config_pkg
+            _config_pkg.reload_all()
+        except Exception as exc:
+            logger.exception("Paypal协议设置写入失败")
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}), 500
+        return jsonify({
+            "ok": True,
+            "updated": result.get("updated", []),
+            "settings": extract_link_service.public_settings(),
+        })
 
     @app.post("/api/accounts/codex-agent")
     def api_account_codex_agent():
