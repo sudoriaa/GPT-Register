@@ -263,6 +263,17 @@ class ProviderRecentMailTests(unittest.TestCase):
         )
         conn.search.assert_called_once_with(None, '(TO "mine@example.com")')
 
+    def test_qq_search_peeks_without_marking_message_read(self):
+        conn = mock.Mock()
+        conn.search.return_value = ("OK", [b"7"])
+        conn.fetch.return_value = (
+            "OK",
+            [(b"7 (BODY[] {55}", b"Subject: Hello\r\nTo: mine@example.com\r\n\r\nBody")],
+        )
+        messages = qqmail_client._search_messages(conn, message_limit=1)
+        self.assertEqual(messages[0]["subject"], "Hello")
+        conn.fetch.assert_called_once_with(b"7", "(BODY.PEEK[])")
+
     def test_outlook_recent_reader_uses_imap_when_graph_is_empty(self):
         account = outlook_client.OutlookAccount(
             "fixture@outlook.com", "password", "client", "refresh"

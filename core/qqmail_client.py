@@ -224,7 +224,8 @@ def _search_messages(
 
     messages = []
     for mid in recent_ids:
-        status, data = mail.fetch(mid, "(RFC822)")
+        # BODY.PEEK keeps both OTP polling and the recent-mail viewer read-only.
+        status, data = mail.fetch(mid, "(BODY.PEEK[])")
         if status != "OK":
             continue
         raw_email = data[0][1]
