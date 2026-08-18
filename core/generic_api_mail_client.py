@@ -410,8 +410,12 @@ def _parse_mailyou_url(code_url: str) -> tuple[str, str] | None:
         return None
 
 
-def _mailyou_request_url(code_url: str, email: str = "") -> str | None:
-    """生成 mailyou 请求 URL，并统一使用 ``addr`` 与 ``format=html``。"""
+def _mailyou_request_url(
+    code_url: str,
+    email: str = "",
+    format_value: str = "html",
+) -> str | None:
+    """生成 mailyou 请求 URL，并统一使用 ``addr`` 与指定响应格式。"""
     parsed_info = _parse_mailyou_url(code_url)
     if not parsed_info:
         return None
@@ -419,6 +423,7 @@ def _mailyou_request_url(code_url: str, email: str = "") -> str | None:
         parsed = urlparse(str(code_url or "").strip())
         pairs = _mailyou_query_pairs(parsed.query or "")
         target_email = str(email or "").strip()
+        response_format = str(format_value or "html").strip().lower() or "html"
         placeholder_re = re.compile(r"^(?:\{+\s*email\s*\}+|\$email|:email)$", re.IGNORECASE)
         replaced = False
         output: list[tuple[str, str]] = []
@@ -430,13 +435,13 @@ def _mailyou_request_url(code_url: str, email: str = "") -> str | None:
                 output.append(("addr", str(value or "").strip()))
                 replaced = True
             elif lower_key == "format":
-                output.append(("format", "html"))
+                output.append(("format", response_format))
             else:
                 output.append((key, value))
         if not replaced and target_email:
             output.append(("addr", target_email))
         if not any(str(k).lower() == "format" for k, _v in output):
-            output.append(("format", "html"))
+            output.append(("format", response_format))
         return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/getMail", "", urlencode(output), ""))
     except Exception:
         return None
@@ -455,6 +460,64 @@ def _mailyou_query_pairs(query: str) -> list[tuple[str, str]]:
         value = unquote(raw_value if separator else "")
         pairs.append((key, value))
     return pairs
+
+
+def _parse_mailyou_json_otp(
+    body: str,
+    after_ts: float | None = None,
+) -> tuple[bool, tuple[str, dict] | None]:
+    """解析 mailyou ``format=json`` 响应，返回 ``(是否为 JSON, 结果)``。"""
+    try:
+        data = json.loads(body or "")
+    except Exception:
+        return False, None
+    if not isinstance(data, dict):
+        return True, None
+
+    mail = data.get("mail") if isinstance(data.get("mail"), dict) else {}
+    subject = str(data.get("subject") or mail.get("subject") or "")
+    text = str(data.get("text") or mail.get("text") or "")
+    html_body = str(data.get("html") or mail.get("html") or "")
+    searchable = "\n".join(
+        part for part in (
+            subject,
+            text,
+            _html_to_plain_text(html_body) if html_body else "",
+            str(data.get("code") or data.get("otp") or data.get("verification_code") or ""),
+        ) if part
+    )
+    code = _extract_code(searchable)
+    if not code:
+        return True, None
+
+    received_raw = (
+        data.get("received_at")
+        or data.get("receivedAt")
+        or data.get("date")
+        or mail.get("receivedAt")
+        or mail.get("received_at")
+        or mail.get("date")
+    )
+    msg_ts = _parse_generic_api_ts(received_raw)
+    if after_ts and msg_ts and msg_ts + 2 < after_ts:
+        logger.debug(
+            "[GenericAPI] mailyou 跳过旧验证码: ts=%s after=%s subject=%r",
+            received_raw,
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(after_ts)),
+            subject[:80],
+        )
+        return True, None
+
+    return True, (
+        code,
+        {
+            "source": "mailyou_getMail_json",
+            "received_at": received_raw,
+            "subject": subject,
+            "from": data.get("from") or mail.get("from") or "",
+            "msg_ts": msg_ts,
+        },
+    )
 
 
 def _fetch_mailyou_otp(
@@ -484,17 +547,9 @@ def _fetch_mailyou_otp(
         return None
     # JSON 响应必须在结构化解析后结束；如果 after_ts 判定它是旧码，不能再
     # 把同一份 JSON 拉平为文本重新捞回旧验证码。
-    try:
-        json_body = json.loads(body)
-    except Exception:
-        json_body = None
-    if json_body is not None:
-        structured = _extract_structured_api_code(body, after_ts=after_ts)
-        if structured:
-            code, meta = structured
-            meta = {**meta, "source": "mailyou_getMail_json"}
-            return code, meta
-        return None
+    json_checked, json_result = _parse_mailyou_json_otp(body, after_ts=after_ts)
+    if json_checked:
+        return json_result
 
     # 页面本身包含 Worker 的导航/样式，先压成正文，避免 CSS 色值或脚本里的
     # 数字被误识别为验证码。仅对明确的纯文本响应使用原文兜底。
@@ -504,6 +559,27 @@ def _fetch_mailyou_otp(
         return None
     title_m = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
     subject = _strip_html_fragment(title_m.group(1)) if title_m else ""
+
+    # HTML 页面没有邮件时间；Worker 的 JSON 变体包含 mail.receivedAt。仅在
+    # 已经发现候选码且调用方提供 after_ts 时补一次校验，避免每轮空轮询都发
+    # 两个请求。JSON 不可用时保留 HTML 路径的兼容行为。
+    if after_ts is not None:
+        json_url = _mailyou_request_url(code_url, email=email, format_value="json")
+        if json_url and json_url != request_url:
+            try:
+                json_resp = session.get(
+                    json_url,
+                    headers={**headers, "Accept": "application/json"},
+                    timeout=20,
+                    verify=False,
+                )
+                if json_resp.status_code == 200:
+                    checked, result = _parse_mailyou_json_otp(json_resp.text or "", after_ts=after_ts)
+                    if checked:
+                        return result
+            except Exception as exc:
+                logger.debug("[GenericAPI] mailyou JSON 时间校验失败: %s: %s", type(exc).__name__, exc)
+
     logger.info("[GenericAPI] mailyou 提取到 OTP=%s subject=%r", code, subject[:100])
     return code, {"source": "mailyou_getMail_html", "subject": subject, "msg_ts": None}
 
