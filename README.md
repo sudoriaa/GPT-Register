@@ -80,7 +80,7 @@ API Key 也可以在 WebUI「配置」页或「Paypal协议」本地支付设置
 |---|---|
 | Outlook | `email----password----clientId----refreshToken` |
 | mail.com / GMX / Caramail | `email----登录密码`（mail.com 使用 [maildotcom-sdk](https://github.com/tanu360/maildotcom-sdk)，GMX/Caramail 按域名自动使用 GMX IMAP） |
-| 通用 API | `email----取码地址` |
+| 通用 API | `email----取码地址`（例如 `email----https://mailyou-mail-worker.sudoria9.workers.dev/getMail?addr={email}&format=html`） |
 | IMAP（Roundcube 类） | `email----密码`（导入时填「服务商地址」，支持多个同系统不同地址） |
 | xbovo | `email----alias_xxx` |
 

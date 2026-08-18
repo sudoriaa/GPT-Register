@@ -17,7 +17,7 @@ import html as html_lib
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 
 import requests
 
@@ -383,6 +383,106 @@ def _parse_mail_api_url(code_url: str) -> tuple[str, str, str] | None:
     return origin.rstrip("/"), unquote(key), unquote(email)
 
 
+def _parse_mailyou_url(code_url: str) -> tuple[str, str] | None:
+    """识别 mailyou Worker 的 HTML 取件地址。
+
+    当前格式示例：
+    ``https://<worker>/getMail?addr=name@example.com&format=html``。
+    返回 ``(endpoint, addr)``；``addr`` 可以是 ``{email}`` 模板，实际请求
+    时由 :func:`_mailyou_request_url` 用邮箱池中的地址替换。
+    """
+    try:
+        parsed = urlparse(str(code_url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+        if (parsed.path or "").rstrip("/").lower() != "/getmail":
+            return None
+        query = {
+            str(key or "").lower(): value
+            for key, value in parse_qsl(parsed.query or "", keep_blank_values=True)
+        }
+        addr = str(query.get("addr") or query.get("email") or query.get("mail") or "").strip()
+        if not addr:
+            return None
+        endpoint = urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/getMail", "", "", ""))
+        return endpoint.rstrip("/"), unquote(addr)
+    except Exception:
+        return None
+
+
+def _mailyou_request_url(code_url: str, email: str = "") -> str | None:
+    """生成 mailyou 请求 URL，并统一使用 ``addr`` 与 ``format=html``。"""
+    parsed_info = _parse_mailyou_url(code_url)
+    if not parsed_info:
+        return None
+    try:
+        parsed = urlparse(str(code_url or "").strip())
+        pairs = parse_qsl(parsed.query or "", keep_blank_values=True)
+        target_email = str(email or "").strip()
+        placeholder_re = re.compile(r"^(?:\{+\s*email\s*\}+|\$email|:email)$", re.IGNORECASE)
+        replaced = False
+        output: list[tuple[str, str]] = []
+        for key, value in pairs:
+            lower_key = str(key or "").lower()
+            if lower_key in {"addr", "email", "mail"}:
+                if target_email and (placeholder_re.fullmatch(str(value or "").strip()) or not str(value or "").strip()):
+                    value = target_email
+                output.append(("addr", str(value or "").strip()))
+                replaced = True
+            elif lower_key == "format":
+                output.append(("format", "html"))
+            else:
+                output.append((key, value))
+        if not replaced and target_email:
+            output.append(("addr", target_email))
+        if not any(str(k).lower() == "format" for k, _v in output):
+            output.append(("format", "html"))
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/getMail", "", urlencode(output), ""))
+    except Exception:
+        return None
+
+
+def _fetch_mailyou_otp(
+    session: requests.Session,
+    code_url: str,
+    headers: dict,
+    after_ts: float | None = None,
+    email: str = "",
+) -> tuple[str, dict] | None:
+    """从 mailyou ``getMail`` HTML 响应提取最新验证码。"""
+    request_url = _mailyou_request_url(code_url, email=email)
+    if not request_url:
+        return None
+    try:
+        resp = session.get(
+            request_url,
+            headers={**headers, "Accept": "text/html,application/xhtml+xml,text/plain,application/json,*/*"},
+            timeout=20,
+            verify=False,
+        )
+        if resp.status_code != 200:
+            logger.debug("[GenericAPI] mailyou HTTP %s: %s", resp.status_code, (resp.text or "")[:160])
+            return None
+        body = resp.text or ""
+    except Exception as exc:
+        logger.debug("[GenericAPI] mailyou 读取失败: %s: %s", type(exc).__name__, exc)
+        return None
+    structured = _extract_structured_api_code(body, after_ts=after_ts)
+    if structured:
+        code, meta = structured
+        meta = {**meta, "source": "mailyou_getMail_json"}
+        return code, meta
+    # 页面本身包含 Worker 的导航/样式，先压成正文，避免 CSS 色值或脚本里的
+    # 数字被误识别为验证码；如果页面不是标准 HTML，再回退到原始响应文本。
+    code = _extract_code(_html_to_plain_text(body)) or _extract_code(body)
+    if not code:
+        return None
+    title_m = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+    subject = _strip_html_fragment(title_m.group(1)) if title_m else ""
+    logger.info("[GenericAPI] mailyou 提取到 OTP=%s subject=%r", code, subject[:100])
+    return code, {"source": "mailyou_getMail_html", "subject": subject, "msg_ts": None}
+
+
 def _first_code(value) -> str | None:
     """从任意值里提取 6 位验证码；非 6 位或空返回 None。"""
     if value is None:
@@ -431,8 +531,12 @@ def _fetch_mail_api_otp(
     code_url: str,
     headers: dict,
     after_ts: float | None = None,
+    email: str = "",
 ) -> tuple[str, dict] | None:
-    """从微信邮箱取件 JSON API（/mail-api/{key}/{email}?folder=inbox）抽取最新 6 位验证码。
+    """从 mail-api 或 mailyou HTML 取件地址抽取最新 6 位验证码。
+
+    微信邮箱取件 JSON API 的路径为 ``/mail-api/{key}/{email}?folder=inbox``；
+    mailyou Worker 则直接返回服务端渲染的 HTML。
 
     顶层 code 字段是接口算好的"最新验证码"；messages[] 里每条还有 verification_code，
     按 after_ts 过滤旧码，避免拿到上一次缓存验证码。
@@ -440,6 +544,11 @@ def _fetch_mail_api_otp(
     若该站没有 /mail-api JSON 接口（如 api798.com 返回 404），回退解析取件地址本身
     服务端渲染的邮件 HTML（_fetch_latest_html_page_otp）。
     """
+    # mailyou Worker 直接返回服务端渲染的 HTML，不需要 /mail-api JSON 路径。
+    # 放在旧 mail-api parser 前面，避免把它当成未知 URL 而漏掉模板邮箱替换。
+    if _parse_mailyou_url(code_url):
+        return _fetch_mailyou_otp(session, code_url, headers, after_ts=after_ts, email=email)
+
     parsed = _parse_mail_api_url(code_url)
     if not parsed:
         return None
@@ -867,6 +976,81 @@ def _mail_items_mail_api(session: requests.Session, code_url: str, headers: dict
     return out
 
 
+def _mail_items_mailyou(
+    session: requests.Session,
+    code_url: str,
+    headers: dict,
+    email: str = "",
+) -> list[dict]:
+    """读取 mailyou Worker 的 HTML 取件页并转换成标准邮件 item。"""
+    request_url = _mailyou_request_url(code_url, email=email)
+    if not request_url:
+        return []
+    try:
+        resp = session.get(
+            request_url,
+            headers={**headers, "Accept": "text/html,application/xhtml+xml,application/json,text/plain,*/*"},
+            timeout=20,
+            verify=False,
+        )
+        if resp.status_code != 200:
+            return []
+        raw = resp.text or ""
+    except Exception:
+        return []
+
+    # 当前接口返回 HTML；同时接受常见 JSON 包装，便于同一 Worker 后续切换响应格式。
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        records = data.get("messages") or data.get("items")
+        if not isinstance(records, list):
+            records = [data]
+        out: list[dict] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            subject = str(record.get("subject") or record.get("title") or "")
+            html_body = str(record.get("html") or record.get("body_html") or "")
+            body = str(
+                record.get("body_text")
+                or record.get("text")
+                or record.get("body")
+                or html_body
+                or ""
+            )
+            if not subject and not body:
+                continue
+            item = {
+                "subject": subject,
+                "text": f"{subject}\n{body}",
+                "received_at": record.get("received_at") or record.get("receivedAt") or record.get("date") or "",
+                "from": record.get("from") or record.get("from_address") or record.get("sender") or "",
+            }
+            if html_body:
+                item["html"] = html_body
+            out.append(item)
+        if out:
+            return out
+
+    title_m = re.search(r"<title[^>]*>(.*?)</title>", raw, flags=re.IGNORECASE | re.DOTALL)
+    subject = _strip_html_fragment(title_m.group(1)) if title_m else ""
+    body_m = re.search(r"<body[^>]*>(.*?)</body>", raw, flags=re.IGNORECASE | re.DOTALL)
+    body_html = body_m.group(1) if body_m else raw
+    text = _html_to_plain_text(body_html)
+    if not subject and not text:
+        return []
+    return [{
+        "subject": subject,
+        "text": f"{subject}\n{text}",
+        "html": body_html,
+        "received_at": "",
+        "from": "",
+    }]
+
+
 def _mail_items_latest_html(session: requests.Session, code_url: str, headers: dict) -> list[dict]:
     """服务端渲染邮件页（api798 类）：GET 取件地址本身，从 HTML 里取 subject + 正文。"""
     try:
@@ -1008,7 +1192,7 @@ def fetch_mail_items_for_url(code_url: str, headers: dict | None = None, email: 
     拉取该取件地址的邮件列表（subject + 正文片段），用于关键词检测（如 Plus）。
 
     返回 [{subject, text, received_at, from}]；识别不到类型或拉取失败返回 []。
-    支持 youyangai / mail-api / xbovo / yangyang。xbovo 的 messages 接口需要 email 参数。
+    支持 mailyou / youyangai / mail-api / xbovo / yangyang。xbovo 的 messages 接口需要 email 参数。
     """
     code_url = str(code_url or "").strip()
     if not code_url:
@@ -1022,6 +1206,8 @@ def fetch_mail_items_for_url(code_url: str, headers: dict | None = None, email: 
         return _mail_items_flysms(session, code_url, hdrs)
     if _parse_youyangai_url(code_url):
         return _mail_items_youyangai(session, code_url, hdrs)
+    if _parse_mailyou_url(code_url):
+        return _mail_items_mailyou(session, code_url, hdrs, email=email)
     if _parse_mail_api_url(code_url):
         return _mail_items_mail_api(session, code_url, hdrs)
     if _parse_xbovo_key(code_url):
@@ -1503,7 +1689,12 @@ def fetch_latest_otp(
     # flysms 优先：它的 fragment 与 youyangai 同款，若放后面会被 youyangai 贪吃匹配。
     is_flysms = _parse_flysms_url(account.code_url) is not None
     is_yangyang = (not is_flysms) and _parse_yangyang_code_url(account.code_url) is not None
-    is_mail_api = (not is_flysms and not is_yangyang) and _parse_mail_api_url(account.code_url) is not None
+    is_mailyou = (not is_flysms and not is_yangyang) and _parse_mailyou_url(account.code_url) is not None
+    is_mail_api = (
+        not is_flysms
+        and not is_yangyang
+        and (is_mailyou or _parse_mail_api_url(account.code_url) is not None)
+    )
     is_xbovo = (not is_flysms and not is_yangyang and not is_mail_api) and _parse_xbovo_key(account.code_url) is not None
     is_youyangai = (not is_flysms and not is_yangyang and not is_mail_api and not is_xbovo) and _parse_youyangai_url(account.code_url) is not None
 
@@ -1535,7 +1726,13 @@ def fetch_latest_otp(
                 resp = None
                 text = ""
             elif is_mail_api:
-                mail_result = _fetch_mail_api_otp(session, account.code_url, headers, after_ts=after_ts)
+                mail_result = _fetch_mail_api_otp(
+                    session,
+                    account.code_url,
+                    headers,
+                    after_ts=after_ts,
+                    email=account.email,
+                )
                 if mail_result:
                     code, ma_meta = mail_result
                     now_seen = time.time()
