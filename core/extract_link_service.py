@@ -559,6 +559,29 @@ def _format_failure_reason(exc: Exception, logs: list[str] | None = None, last_e
     return reason[:500]
 
 
+def _maybe_enqueue_paypal_payment(account_id: int, *, trigger: str) -> None:
+    """提链成功后按独立开关自动进入协议支付队列。"""
+    try:
+        from core import paypal_payment_service
+        if not paypal_payment_service.auto_payment_enabled():
+            return
+        queued = paypal_payment_service.enqueue_account_payment(
+            account_id=int(account_id),
+            trigger=f"extract_{trigger}"[:80],
+        )
+        if queued.get("accepted"):
+            logger.info("[提链] 已自动入协议支付队列: account_id=%s", account_id)
+        else:
+            logger.warning(
+                "[提链] 自动协议支付入队失败: account_id=%s reason=%s",
+                account_id,
+                _redact_text(queued.get("error") or "unknown"),
+            )
+    except Exception as exc:
+        # 提链本身已经成功，支付入队异常只记录给人工处理，不回滚提链结果。
+        logger.exception("[提链] 自动协议支付触发异常: account_id=%s: %s", account_id, type(exc).__name__)
+
+
 def _run_extract(
     *,
     account_id: int,
@@ -600,6 +623,7 @@ def _run_extract(
                 "proxy_source": proxy_source,
             }
             db.update_account_extract(account_id, final)
+            _maybe_enqueue_paypal_payment(account_id, trigger=trigger)
             logger.info("[提链] 本地成功: %s type=%s", email, link_type)
             return final
 
@@ -636,6 +660,7 @@ def _run_extract(
                 result = _normalize_local_result(result, link_type=link_type)
                 final = {"ok": True, "status": "success", "job_id": job_id, "link_type": link_type, "result": result, "logs": logs, "proxy_source": proxy_source}
                 db.update_account_extract(account_id, final)
+                _maybe_enqueue_paypal_payment(account_id, trigger=trigger)
                 logger.info("[提链] 成功: %s type=%s job=%s", email, link_type, job_id)
                 return final
             elif event == "error":

@@ -1,18 +1,26 @@
 (function (root) {
   'use strict';
 
+  const BUCKETS = {
+    payment_success: { label: '支付成功', empty: '暂无支付成功账号' },
+    extract_success_payment_failed: { label: '只提链未支付成功', empty: '暂无只提链未支付成功账号' },
+    extract_failed: { label: '未提链成功', empty: '暂无未提链成功账号' },
+  };
+
   const state = {
     page: 1,
     pageSize: 25,
     status: '',
+    bucket: 'payment_success',
     query: '',
     items: [],
     total: 0,
+    bucketCounts: {},
     selected: new Set(),
     loading: false,
     initialized: false,
-    proxyDirty: false,
     settings: {},
+    settingsDirty: new Set(),
     queue: {},
   };
 
@@ -37,12 +45,12 @@
   }
 
   async function copyValue(value) {
-    if (!value) return;
+    if (value == null || value === '') return;
     if (typeof root.copyText === 'function') {
-      await root.copyText(value);
+      await root.copyText(String(value));
       return;
     }
-    await navigator.clipboard.writeText(value);
+    await navigator.clipboard.writeText(String(value));
     notify('已复制');
   }
 
@@ -52,6 +60,15 @@
       if (Number.isFinite(value)) return value;
     }
     return fallback;
+  }
+
+  function nullableNumberFrom(obj, keys) {
+    for (const key of keys) {
+      if (!obj || obj[key] == null || obj[key] === '') continue;
+      const value = Number(obj[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return null;
   }
 
   function booleanFrom(obj, keys, fallback = false) {
@@ -64,14 +81,23 @@
     return fallback;
   }
 
+  function valueFrom(item, keys) {
+    const sources = [item, item && item.account, item && item.credentials, item && item.secrets, item && item.account_attributes];
+    for (const source of sources) {
+      if (!source || typeof source !== 'object') continue;
+      for (const key of keys) {
+        const value = source[key];
+        if (value != null && value !== '') return value;
+      }
+    }
+    return '';
+  }
+
   function parseTimeMs(value) {
     if (value == null || value === '') return 0;
     const raw = String(value).trim();
     const numeric = Number(raw);
-    if (Number.isFinite(numeric) && numeric > 0) {
-      if (numeric < 1e11) return numeric * 1000;
-      return numeric;
-    }
+    if (Number.isFinite(numeric) && numeric > 0) return numeric < 1e11 ? numeric * 1000 : numeric;
     const parsed = new Date(raw).getTime();
     return Number.isFinite(parsed) ? parsed : 0;
   }
@@ -79,31 +105,49 @@
   function itemStatus(item) {
     const display = String(item.status || '').trim().toLowerCase();
     if (display === 'expired') return 'expired';
-    return String(item.extract_link_status || display || '').trim().toLowerCase();
+    return String(item.extract_link_status || item.extract_status || display || '').trim().toLowerCase();
+  }
+
+  function itemPaymentStatus(item) {
+    return String(item.payment_status || item.paypal_payment_status || item.protocol_payment_status || item.pay_status || '').trim().toLowerCase();
   }
 
   function itemAccountId(item) {
-    const value = item.account_id != null ? item.account_id : item.id;
+    const value = item.account_id != null ? item.account_id : (item.account && item.account.id != null ? item.account.id : item.id);
     return value == null ? '' : String(value);
   }
 
+  function itemRecordId(item) {
+    const value = item.record_id != null ? item.record_id
+      : item.paypal_protocol_id != null ? item.paypal_protocol_id
+      : item.protocol_id != null ? item.protocol_id
+      : item.id != null ? item.id : item.account_id;
+    return value == null ? '' : String(value);
+  }
+
+  function itemKey(item) {
+    const recordId = itemRecordId(item);
+    const accountId = itemAccountId(item);
+    return recordId ? `r:${recordId}` : (accountId ? `a:${accountId}` : '');
+  }
+
   function itemEmail(item) {
-    return item.email || item.account_email || item.username || '';
+    return valueFrom(item, ['email', 'account_email', 'username']);
   }
 
   function itemLink(item) {
-    return item.extract_link_long_url || item.extract_link_copy_paste || item.long_url || item.payment_link || item.link || '';
+    return valueFrom(item, ['extract_link_long_url', 'extract_link_copy_paste', 'long_url', 'payment_link', 'link']);
   }
 
   function itemQr(item) {
-    return item.extract_link_image_url_png || item.extract_link_image_url_svg || item.image_url_png || item.image_url_svg || item.qr_url || '';
+    return valueFrom(item, ['extract_link_image_url_png', 'extract_link_image_url_svg', 'image_url_png', 'image_url_svg', 'qr_url']);
   }
 
   function itemExpiryMs(item) {
-    const explicit = parseTimeMs(item.extract_link_expires_at || item.expires_at || item.payment_link_expires_at);
+    const explicit = parseTimeMs(valueFrom(item, ['extract_link_expires_at', 'expires_at', 'payment_link_expires_at']));
     if (explicit) return explicit;
     if (!['success', 'expired'].includes(itemStatus(item))) return 0;
-    const base = parseTimeMs(item.extract_link_completed_at || item.completed_at || item.extract_link_checked_at || item.updated_at || item.created_at);
+    const base = parseTimeMs(valueFrom(item, ['extract_link_completed_at', 'completed_at', 'extract_link_checked_at', 'updated_at', 'created_at']));
     return base ? base + 60 * 60 * 1000 : 0;
   }
 
@@ -131,11 +175,23 @@
     return (status === 'success' || status === 'expired') && expiry > 0 && expiry <= Date.now();
   }
 
+  function itemBucket(item) {
+    const raw = String(item.payment_bucket || item.bucket || item.result_bucket || '').trim().toLowerCase().replace(/-/g, '_');
+    if (['payment_success', 'paid', 'pay_success', 'success_paid'].includes(raw)) return 'payment_success';
+    if (['extract_success_payment_failed', 'extract_success', 'extract_only', 'link_only', 'extracted_unpaid', 'payment_failed', 'payment_pending'].includes(raw)) return 'extract_success_payment_failed';
+    if (['extract_failed', 'not_extracted', 'extract_pending', 'unextracted'].includes(raw)) return 'extract_failed';
+
+    const paymentStatus = itemPaymentStatus(item);
+    if (['success', 'paid', 'completed', 'succeeded'].includes(paymentStatus)) return 'payment_success';
+    if (['success', 'expired'].includes(itemStatus(item)) || itemLink(item)) return 'extract_success_payment_failed';
+    return 'extract_failed';
+  }
+
   function statusView(item) {
     const status = isExpired(item) ? 'expired' : itemStatus(item);
     const labels = {
-      queued: '排队中', running: '提链中', success: '成功', failed: '失败',
-      expired: '已过期', pending: '待处理', idle: '未提链',
+      queued: '排队中', running: '提链中', success: '成功', failed: '失败', stopped: '已停止',
+      expired: '已过期', pending: '待处理', idle: '未提链', skipped: '已跳过',
     };
     const tone = status === 'success' ? 'success'
       : ['queued', 'running', 'pending'].includes(status) ? 'running'
@@ -144,22 +200,148 @@
     return `<span class="paypal-protocol-pill paypal-protocol-status-${tone}" data-paypal-status="${html(status)}">${html(labels[status] || status || '未提链')}</span>`;
   }
 
+  function paymentStatusView(item) {
+    const status = itemPaymentStatus(item);
+    const labels = {
+      queued: '排队中', pending: '待支付', waiting: '待支付', running: '支付中', processing: '支付中',
+      success: '支付成功', succeeded: '支付成功', completed: '支付成功', paid: '支付成功',
+      failed: '支付失败', error: '支付失败', retrying: '重试中', cancelled: '已取消', canceled: '已取消',
+      skipped: '未支付', idle: '未支付',
+    };
+    const successful = ['success', 'succeeded', 'completed', 'paid'].includes(status);
+    const running = ['queued', 'pending', 'waiting', 'running', 'processing', 'retrying'].includes(status);
+    const failed = ['failed', 'error', 'cancelled', 'canceled'].includes(status);
+    const tone = successful ? 'success' : running ? 'running' : failed ? 'failed' : 'muted';
+    return `<span class="paypal-protocol-pill paypal-protocol-status-${tone}">${html(labels[status] || status || '未支付')}</span>`;
+  }
+
+  function bucketView(item) {
+    const bucket = itemBucket(item);
+    const tone = bucket === 'payment_success' ? 'success' : bucket === 'extract_success_payment_failed' ? 'warning' : 'failed';
+    return `<span class="paypal-protocol-bucket-label is-${tone}">${html(BUCKETS[bucket].label)}</span>`;
+  }
+
   function proxySourceLabel(item) {
-    const raw = String(item.extract_link_proxy_source || item.proxy_source || item.proxy_mode || '').toLowerCase();
+    const raw = String(valueFrom(item, ['payment_proxy_source', 'extract_link_proxy_source', 'proxy_source', 'proxy_mode']) || '').toLowerCase();
     if (raw.includes('registration') || raw.includes('register')) return '注册代理';
     if (raw.includes('request') || raw.includes('manual') || raw.includes('override')) return '本次自定义';
     if (raw.includes('config') || raw.includes('global') || raw.includes('default')) return '全局自定义';
     if (item.used_registration_proxy === true) return '注册代理';
     if (item.used_custom_proxy === true) return '自定义代理';
-    return raw ? raw : '按默认优先级';
+    return raw || '按默认优先级';
   }
 
   function itemType(item) {
-    return String(item.extract_link_type || item.extract_link_payment_method || item.extract_link_payment_link_type || item.payment_method || item.payment_link_type || item.link_type || '-').toUpperCase();
+    return String(valueFrom(item, ['extract_link_type', 'extract_link_payment_method', 'extract_link_payment_link_type', 'payment_method', 'payment_link_type', 'link_type']) || '-').toUpperCase();
   }
 
-  function itemMessage(item) {
-    return item.extract_link_error || item.error || item.extract_link_message || item.message || '';
+  function itemExtractMessage(item) {
+    return valueFrom(item, ['extract_link_error', 'extract_error', 'error', 'extract_link_message', 'message']);
+  }
+
+  function itemPaymentMessage(item) {
+    return valueFrom(item, ['payment_error', 'payment_last_error', 'payment_message', 'pay_error']);
+  }
+
+  const ATTRIBUTE_KEYS = {
+    at: ['access_token', 'at'],
+    rt: ['refresh_token', 'rt'],
+    password: ['password', 'account_password', 'login_password'],
+    twofa: ['two_fa_secret', 'twofa_secret', 'two_factor_secret', 'otp_secret', 'totp_secret', '2fa_secret'],
+    proxy: ['registration_proxy', 'register_proxy', 'proxy_used', 'account_proxy', 'proxy'],
+  };
+
+  const ATTRIBUTE_SECRET_FIELDS = {
+    at: 'access_token',
+    rt: 'codex_refresh_token',
+    password: 'chatgpt_password',
+    twofa: 'totp_secret',
+    proxy: 'registration_proxy',
+  };
+
+  const ATTRIBUTE_FLAGS = {
+    at: ['has_access_token'],
+    rt: ['has_refresh_token'],
+    password: ['has_chatgpt_password', 'has_password'],
+    twofa: ['totp_enabled', 'has_totp_secret', 'has_twofa'],
+    proxy: ['has_registration_proxy', 'has_proxy'],
+  };
+
+  function attributeValue(item, type) {
+    return valueFrom(item, ATTRIBUTE_KEYS[type] || []);
+  }
+
+  function attributeAvailable(item, type) {
+    if (attributeValue(item, type)) return true;
+    return booleanFrom(item, ATTRIBUTE_FLAGS[type] || [], false);
+  }
+
+  async function copyAttribute(item, type) {
+    const inlineValue = attributeValue(item, type);
+    if (inlineValue) {
+      await copyValue(inlineValue);
+      return;
+    }
+    const accountId = itemAccountId(item);
+    const field = ATTRIBUTE_SECRET_FIELDS[type];
+    if (!accountId || !field || !attributeAvailable(item, type)) return;
+    try {
+      const payload = await requestJson(`/api/accounts/${encodeURIComponent(accountId)}/secret?field=${encodeURIComponent(field)}`);
+      if (!payload.value) throw new Error('值为空');
+      await copyValue(payload.value);
+    } catch (error) {
+      notify('读取账号属性失败：' + error.message);
+    }
+  }
+
+  function maskValue(value) {
+    const text = String(value == null ? '' : value);
+    if (!text) return '-';
+    if (/^[*•]+$/.test(text) || text.includes('***')) return text;
+    if (text.length <= 6) return '••••';
+    return `••••${text.slice(-4)}`;
+  }
+
+  function renderAttributes(item, index) {
+    const definitions = [
+      ['at', 'AT'], ['rt', 'RT'], ['password', '密码'], ['twofa', '2FA'], ['proxy', '代理'],
+    ];
+    return `<div class="paypal-protocol-attributes">${definitions.map(([type, label]) => {
+      const value = attributeValue(item, type);
+      const available = attributeAvailable(item, type);
+      return `<button type="button" class="paypal-protocol-attribute" data-paypal-copy-prop-index="${index}" data-paypal-copy-prop="${type}"${available ? '' : ' disabled'} title="${available ? `复制${label}` : `${label}暂无数据`}"><span>${label}</span><em>${html(value ? maskValue(value) : (available ? '已配置' : '-'))}</em></button>`;
+    }).join('')}</div>`;
+  }
+
+  function visibleItems() {
+    return state.items.filter((item) => itemBucket(item) === state.bucket);
+  }
+
+  function backendBucketValue() {
+    // The persisted backend uses extract_only/not_extracted; the UI keeps
+    // descriptive names so the three panels remain stable if the API evolves.
+    return state.bucket === 'payment_success' ? 'payment_success'
+      : state.bucket === 'extract_success_payment_failed' ? 'extract_only' : 'not_extracted';
+  }
+
+  function selectedItems() {
+    return state.items.filter((item) => state.selected.has(itemKey(item)));
+  }
+
+  function isPaymentSuccess(item) {
+    return itemBucket(item) === 'payment_success';
+  }
+
+  function paymentBusy(item) {
+    return ['queued', 'pending', 'waiting', 'running', 'processing', 'retrying'].includes(itemPaymentStatus(item));
+  }
+
+  function canRunPayment(item) {
+    // The PP协议 link is valid for 60 minutes.  Keep expired extraction
+    // records visible for manual re-extraction, but do not offer a payment
+    // action that the backend will necessarily reject.
+    return !isPaymentSuccess(item) && !isExpired(item) && !paymentBusy(item)
+      && (itemBucket(item) === 'extract_success_payment_failed' || Boolean(itemLink(item)));
   }
 
   function renderShell() {
@@ -171,66 +353,140 @@
         <div class="paypal-protocol-head">
           <div>
             <h1>Paypal协议</h1>
-            <p>使用账号 AT 生成支付链接。每条成功链接有效 60 分钟；代理默认沿用账号注册时的代理，也可设置全局或本次覆盖。</p>
+            <p>Plus 试用账号可自动提链并继续协议支付；失败记录保留在对应分区，支持人工重新提链、重新支付和批量处理。</p>
           </div>
-          <div class="paypal-protocol-badges" id="paypalQueueBadges" aria-live="polite">
+          <div class="paypal-protocol-badges" aria-live="polite">
             <span class="paypal-protocol-badge">记录 <strong id="paypalStatTotal">0</strong></span>
-            <span class="paypal-protocol-badge">排队 <strong id="paypalStatQueued">0</strong></span>
-            <span class="paypal-protocol-badge">运行 <strong id="paypalStatRunning">0</strong></span>
-            <span class="paypal-protocol-badge">成功 <strong id="paypalStatSuccess">0</strong></span>
+            <span class="paypal-protocol-badge is-success">支付成功 <strong id="paypalStatPaid">0</strong></span>
+            <span class="paypal-protocol-badge is-warning">只提链 <strong id="paypalStatLinkOnly">0</strong></span>
+            <span class="paypal-protocol-badge is-failed">未提链 <strong id="paypalStatExtractFailed">0</strong></span>
           </div>
         </div>
 
-        <section class="paypal-protocol-card" aria-label="自动提链设置">
+        <section class="paypal-protocol-card" aria-label="Paypal 自动化设置">
           <div class="paypal-protocol-card-head">
-            <div><h2>自动提链</h2><p>开启后，套餐检测确认账号为 free 且具备 Plus 试用资格时自动进入提链队列。</p></div>
+            <div><h2>自动化与接码设置</h2><p>支付代理留空时沿用账号注册代理；SMSBower 服务固定为 PayPal，接码和支付失败都按重接次数重新执行。</p></div>
           </div>
-          <div class="paypal-protocol-card-body paypal-protocol-settings">
-            <div class="paypal-protocol-field">
-              <span>自动提链开关</span>
-              <label class="paypal-protocol-toggle"><input type="checkbox" id="paypalAutoExtract"> 检测到 Plus 试用资格后自动提链</label>
-              <small>重复检测会由后端去重，不会重复占用同一账号。</small>
+          <div class="paypal-protocol-card-body">
+            <div class="paypal-protocol-settings-section">
+              <div class="paypal-protocol-settings-title">提链</div>
+              <div class="paypal-protocol-settings-grid is-extract">
+                <div class="paypal-protocol-field">
+                  <span>自动提链</span>
+                  <label class="paypal-protocol-toggle"><input type="checkbox" id="paypalAutoExtract"> Plus 试用资格确认后自动提链</label>
+                  <small>重复检测由队列自动去重。</small>
+                </div>
+                <label class="paypal-protocol-field" for="paypalDefaultProxy">
+                  <span>全局提链代理（选填）</span>
+                  <span class="paypal-protocol-proxy-wrap">
+                    <input type="password" id="paypalDefaultProxy" autocomplete="new-password" spellcheck="false" placeholder="留空则使用注册代理">
+                    <button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalDefaultProxy">显示</button>
+                    <button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="proxy">清除</button>
+                  </span>
+                  <small>支持 URL 或 host:port:user:password。</small>
+                </label>
+              </div>
             </div>
-            <label class="paypal-protocol-field" for="paypalDefaultProxy">
-              <span>全局自定义代理（选填）</span>
-              <span class="paypal-protocol-proxy-wrap">
-                <input type="password" id="paypalDefaultProxy" autocomplete="new-password" spellcheck="false" placeholder="留空则使用每个账号的注册代理">
-                <button type="button" class="paypal-protocol-icon-btn" id="paypalToggleDefaultProxy" title="显示或隐藏代理">显示</button>
-              </span>
-              <small>支持 URL 或 host:port:user:password；页面不会在列表中展示代理认证信息。</small>
-            </label>
-            <div class="paypal-protocol-settings-actions">
-              <button type="button" class="btn primary" id="paypalSaveSettings">保存设置</button>
-              <button type="button" class="btn" id="paypalClearDefaultProxy">清除自定义代理</button>
+
+            <div class="paypal-protocol-settings-section">
+              <div class="paypal-protocol-settings-title">协议支付</div>
+              <div class="paypal-protocol-settings-grid">
+                <div class="paypal-protocol-field">
+                  <span>自动协议支付</span>
+                  <label class="paypal-protocol-toggle"><input type="checkbox" id="paypalAutoPayment"> 提链成功后自动进入支付</label>
+                  <small>关闭后仍可在记录区手动补支付。</small>
+                </div>
+                <label class="paypal-protocol-field" for="paypalPaymentCountry">
+                  <span>账单国家</span>
+                  <input type="text" id="paypalPaymentCountry" maxlength="32" autocomplete="off" placeholder="例如 US、GB">
+                  <small>统一用于生成该国家的账单资料。</small>
+                </label>
+                <label class="paypal-protocol-field" for="paypalPaymentProxy">
+                  <span>全局支付代理（选填）</span>
+                  <span class="paypal-protocol-proxy-wrap">
+                    <input type="password" id="paypalPaymentProxy" autocomplete="new-password" spellcheck="false" placeholder="留空则使用注册代理">
+                    <button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalPaymentProxy">显示</button>
+                    <button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="payment_proxy">清除</button>
+                  </span>
+                  <small>仅覆盖支付阶段代理。</small>
+                </label>
+                <label class="paypal-protocol-field" for="paypalSmsCountry">
+                  <span>SMSBower 接码国家</span>
+                  <input type="text" id="paypalSmsCountry" maxlength="32" autocomplete="off" placeholder="例如 US、GB 或平台国家代码">
+                  <small>接码服务固定为 PayPal。</small>
+                </label>
+                <label class="paypal-protocol-field" for="paypalSmsProviderIds">
+                  <span>渠道号</span>
+                  <input type="text" id="paypalSmsProviderIds" autocomplete="off" spellcheck="false" placeholder="多个渠道用逗号分隔">
+                  <small>按填写顺序选择渠道。</small>
+                </label>
+                <label class="paypal-protocol-field" for="paypalSmsApiKey">
+                  <span>SMSBower API Key</span>
+                  <span class="paypal-protocol-proxy-wrap">
+                    <input type="password" id="paypalSmsApiKey" autocomplete="new-password" spellcheck="false" placeholder="填写 API Key">
+                    <button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalSmsApiKey">显示</button>
+                    <button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="sms_api_key">清除</button>
+                  </span>
+                  <small>已保存的 Key 不会在页面回显。</small>
+                </label>
+                <label class="paypal-protocol-field" for="paypalSmsTimeout">
+                  <span>接码超时（秒）</span>
+                  <input type="number" id="paypalSmsTimeout" min="20" max="3600" step="1" value="180">
+                  <small>单次手机号等待验证码的最长时间。</small>
+                </label>
+                <label class="paypal-protocol-field" for="paypalPaymentRetries">
+                  <span>失败重接次数</span>
+                  <input type="number" id="paypalPaymentRetries" min="0" max="20" step="1" value="2">
+                  <small>没收到码或付款失败都会消耗一次。</small>
+                </label>
+              </div>
             </div>
-            <div class="paypal-protocol-settings-status" id="paypalSettingsStatus">正在读取设置…</div>
+
+            <div class="paypal-protocol-settings-footer">
+              <div class="paypal-protocol-settings-actions">
+                <button type="button" class="btn primary" id="paypalSaveSettings">保存全部设置</button>
+              </div>
+              <div class="paypal-protocol-settings-status" id="paypalSettingsStatus">正在读取设置…</div>
+            </div>
           </div>
         </section>
 
-        <section class="paypal-protocol-card" aria-label="Paypal 提链记录">
+        <section class="paypal-protocol-card" aria-label="Paypal 协议记录">
           <div class="paypal-protocol-card-head">
-            <div><h2>提链记录</h2><p>可查看自动与手动任务，复制成功链接并观察 60 分钟倒计时。</p></div>
+            <div><h2>账号处理结果</h2><p>三个分区独立保留成功与失败账号，选中后可批量补跑、删除或发货。</p></div>
             <button type="button" class="btn" id="paypalRefresh">刷新</button>
           </div>
+          <div class="paypal-protocol-buckets" id="paypalBucketTabs" role="tablist" aria-label="处理结果分区">
+            <button type="button" class="paypal-protocol-bucket is-active" data-paypal-bucket="payment_success" role="tab" aria-selected="true"><span>支付成功</span><strong id="paypalBucketPaid">0</strong><small>可导出发货 / 补跑 2FA</small></button>
+            <button type="button" class="paypal-protocol-bucket" data-paypal-bucket="extract_success_payment_failed" role="tab" aria-selected="false"><span>只提链未支付成功</span><strong id="paypalBucketLinkOnly">0</strong><small>可人工重新支付</small></button>
+            <button type="button" class="paypal-protocol-bucket" data-paypal-bucket="extract_failed" role="tab" aria-selected="false"><span>未提链成功</span><strong id="paypalBucketExtractFailed">0</strong><small>可人工重新提链</small></button>
+          </div>
           <div class="paypal-protocol-toolbar">
-            <label class="paypal-protocol-search"><input type="search" id="paypalSearch" placeholder="搜索邮箱、类型、状态…" autocomplete="off"></label>
+            <label class="paypal-protocol-search"><input type="search" id="paypalSearch" placeholder="搜索邮箱、状态、国家…" autocomplete="off"></label>
             <select id="paypalStatusFilter" aria-label="提链状态">
-              <option value="">全部状态</option>
+              <option value="">全部提链状态</option>
               <option value="queued">排队中</option>
               <option value="running">提链中</option>
-              <option value="success">成功</option>
-              <option value="failed">失败</option>
-              <option value="expired">已过期</option>
+              <option value="success">提链成功</option>
+              <option value="failed">提链失败</option>
+              <option value="expired">链接过期</option>
             </select>
-            <input class="paypal-protocol-bulk-proxy" type="password" id="paypalRunProxy" autocomplete="new-password" spellcheck="false" placeholder="本次代理（留空按默认优先级）" title="本次手动提链使用；优先于全局代理和注册代理">
-            <button type="button" class="btn good" id="paypalExtractSelected" disabled>手动提链选中</button>
+            <input class="paypal-protocol-bulk-proxy" type="password" id="paypalRunProxy" autocomplete="new-password" spellcheck="false" placeholder="本次提链代理（留空按默认优先级）">
+            <input class="paypal-protocol-bulk-proxy" type="password" id="paypalRunPaymentProxy" autocomplete="new-password" spellcheck="false" placeholder="本次支付代理（留空按支付默认优先级）">
+          </div>
+          <div class="paypal-protocol-bulk-actions">
+            <button type="button" class="btn good" id="paypalExtractSelected" disabled>提链选中</button>
+            <button type="button" class="btn primary" id="paypalPaySelected" disabled>支付选中</button>
+            <button type="button" class="btn" id="paypalExportDelivery" disabled>导出发货</button>
+            <button type="button" class="btn" id="paypalSetupTwofa" disabled>补跑 2FA</button>
+            <button type="button" class="btn danger" id="paypalDeleteSelected" disabled>批量删除</button>
             <span class="muted" id="paypalSelectedHint">已选 0</span>
           </div>
           <div class="paypal-protocol-table-wrap">
             <table class="paypal-protocol-table">
-              <colgroup><col class="paypal-col-check"><col class="paypal-col-account"><col class="paypal-col-status"><col class="paypal-col-type"><col class="paypal-col-link"><col class="paypal-col-expire"><col class="paypal-col-time"><col class="paypal-col-actions"></colgroup>
-              <thead><tr><th class="paypal-col-check"><input type="checkbox" id="paypalSelectAll" aria-label="全选当前页"></th><th>账号</th><th>状态</th><th>类型</th><th>支付链接</th><th>剩余时间</th><th>完成时间</th><th>操作</th></tr></thead>
-              <tbody id="paypalProtocolBody"><tr><td colspan="8" class="paypal-protocol-empty">正在加载…</td></tr></tbody>
+              <colgroup><col class="paypal-col-check"><col class="paypal-col-account"><col class="paypal-col-bucket"><col class="paypal-col-status"><col class="paypal-col-payment"><col class="paypal-col-attributes"><col class="paypal-col-link"><col class="paypal-col-expire"><col class="paypal-col-time"><col class="paypal-col-actions"></colgroup>
+              <thead><tr><th class="paypal-col-check"><input type="checkbox" id="paypalSelectAll" aria-label="全选当前页"></th><th>账号</th><th>结果分区</th><th>提链状态</th><th>支付状态</th><th>账号属性（点击复制）</th><th>支付链接</th><th>剩余时间</th><th>完成时间</th><th>人工操作</th></tr></thead>
+              <tbody id="paypalProtocolBody"><tr><td colspan="10" class="paypal-protocol-empty">正在加载…</td></tr></tbody>
             </table>
           </div>
           <div class="paypal-protocol-pager" id="paypalPager"></div>
@@ -239,77 +495,141 @@
     bindEvents();
   }
 
+  function setInputIfClean(id, settingKey, value) {
+    const input = byId(id);
+    if (!input || state.settingsDirty.has(settingKey)) return;
+    input.value = value == null ? '' : String(value);
+  }
+
+  function applyMaskedSetting(inputId, settingKey, configured, masked, emptyPlaceholder) {
+    const input = byId(inputId);
+    if (!input || state.settingsDirty.has(settingKey)) return;
+    input.value = '';
+    input.placeholder = configured ? `已配置${masked ? '：' + masked : ''}；留空不会覆盖` : emptyPlaceholder;
+  }
+
   function applySettings(payload) {
     const settings = payload && payload.settings ? payload.settings : (payload || {});
     state.settings = settings;
-    const toggle = byId('paypalAutoExtract');
-    if (toggle) toggle.checked = booleanFrom(settings, ['auto_extract', 'auto_extract_enabled', 'enabled'], false);
 
-    const input = byId('paypalDefaultProxy');
-    const proxyConfigured = booleanFrom(settings, ['proxy_configured', 'has_proxy', 'custom_proxy_configured'], false);
-    const masked = settings.proxy_masked || settings.masked_proxy || settings.proxy_display || '';
-    if (input && !state.proxyDirty) {
-      input.value = '';
-      input.placeholder = proxyConfigured
-        ? `已配置${masked ? '：' + masked : ''}；留空保存不会覆盖`
-        : '留空则使用每个账号的注册代理';
-    }
+    const autoExtract = byId('paypalAutoExtract');
+    if (autoExtract && !state.settingsDirty.has('auto_extract')) autoExtract.checked = booleanFrom(settings, ['auto_extract', 'auto_extract_enabled', 'enabled'], false);
+    const autoPayment = byId('paypalAutoPayment');
+    if (autoPayment && !state.settingsDirty.has('auto_payment')) autoPayment.checked = booleanFrom(settings, ['auto_payment', 'auto_payment_enabled', 'payment_enabled'], false);
+
+    setInputIfClean('paypalPaymentCountry', 'payment_country', valueFrom(settings, ['payment_country', 'billing_country', 'extract_link_country']));
+    setInputIfClean('paypalSmsCountry', 'sms_country', valueFrom(settings, ['sms_country', 'smsbower_country']));
+    const providerIds = valueFrom(settings, ['sms_provider_ids', 'provider_ids', 'sms_channels']);
+    setInputIfClean('paypalSmsProviderIds', 'sms_provider_ids', Array.isArray(providerIds) ? providerIds.join(',') : providerIds);
+    setInputIfClean('paypalSmsTimeout', 'sms_timeout', valueFrom(settings, ['sms_timeout', 'sms_timeout_seconds']) || 180);
+    const retrySetting = valueFrom(settings, ['payment_retries', 'retry_count']);
+    setInputIfClean('paypalPaymentRetries', 'payment_retries', retrySetting === '' ? 2 : retrySetting);
+
+    const extractProxyConfigured = booleanFrom(settings, ['proxy_configured', 'has_proxy', 'custom_proxy_configured'], false);
+    applyMaskedSetting('paypalDefaultProxy', 'proxy', extractProxyConfigured, valueFrom(settings, ['proxy_masked', 'masked_proxy', 'proxy_display']), '留空则使用注册代理');
+
+    const paymentProxyConfigured = booleanFrom(settings, ['payment_proxy_configured', 'has_payment_proxy'], false);
+    applyMaskedSetting('paypalPaymentProxy', 'payment_proxy', paymentProxyConfigured, valueFrom(settings, ['payment_proxy_masked', 'masked_payment_proxy']), '留空则使用注册代理');
+
+    const smsKeyConfigured = booleanFrom(settings, ['sms_api_key_configured', 'has_sms_api_key', 'smsbower_api_key_configured'], false);
+    applyMaskedSetting('paypalSmsApiKey', 'sms_api_key', smsKeyConfigured, valueFrom(settings, ['sms_api_key_masked', 'smsbower_api_key_masked']), '填写 SMSBower API Key');
+
     const status = byId('paypalSettingsStatus');
     if (status) {
-      const mode = proxyConfigured ? '全局自定义代理已配置' : '当前默认使用各账号的注册代理';
-      status.textContent = `${toggle && toggle.checked ? '自动提链已开启' : '自动提链已关闭'}；${mode}。代理优先级：本次覆盖 > 全局自定义 > 注册代理。`;
+      const autoText = autoPayment && autoPayment.checked ? '自动支付已开启' : '自动支付已关闭';
+      const proxyText = paymentProxyConfigured ? '支付使用全局自定义代理' : '支付默认沿用注册代理';
+      const smsText = smsKeyConfigured ? 'SMSBower Key 已配置' : 'SMSBower Key 未配置';
+      status.textContent = `${autoText}；${proxyText}；${smsText}。`;
     }
   }
 
-  function renderQueue(payload) {
-    const queue = payload && payload.queue ? payload.queue : (payload || {});
-    state.queue = queue;
-    const queued = numberFrom(queue, ['queued', 'queued_count', 'pending'], state.items.filter((item) => itemStatus(item) === 'queued').length);
-    const running = numberFrom(queue, ['running', 'running_count', 'active'], state.items.filter((item) => itemStatus(item) === 'running').length);
-    const summary = payload && (payload.summary || payload.counts) || {};
-    const success = numberFrom(summary, ['success', 'success_count'], state.items.filter((item) => itemStatus(item) === 'success').length);
-    const values = { paypalStatTotal: state.total, paypalStatQueued: queued, paypalStatRunning: running, paypalStatSuccess: success };
-    Object.entries(values).forEach(([id, value]) => { const element = byId(id); if (element) element.textContent = String(value); });
+  function deriveBucketCounts(payload) {
+    const counts = payload && (payload.bucket_counts || payload.payment_buckets || payload.buckets || payload.summary || payload.counts) || {};
+    const currentCounts = state.items.reduce((result, item) => {
+      const bucket = itemBucket(item);
+      result[bucket] = (result[bucket] || 0) + 1;
+      return result;
+    }, {});
+    return {
+      payment_success: nullableNumberFrom(counts, ['payment_success', 'paid', 'payment_success_count']) ?? currentCounts.payment_success ?? 0,
+      extract_success_payment_failed: nullableNumberFrom(counts, ['extract_success_payment_failed', 'extract_only', 'link_only', 'unpaid']) ?? currentCounts.extract_success_payment_failed ?? 0,
+      extract_failed: nullableNumberFrom(counts, ['extract_failed', 'not_extracted', 'unextracted']) ?? currentCounts.extract_failed ?? 0,
+    };
+  }
+
+  function renderSummary(payload) {
+    state.bucketCounts = deriveBucketCounts(payload);
+    const totalFromCounts = Object.values(state.bucketCounts).reduce((sum, value) => sum + Number(value || 0), 0);
+    const reportedTotal = numberFrom(payload, ['all_total', 'overall_total', 'total_count', 'total'], totalFromCounts);
+    const values = {
+      paypalStatTotal: Math.max(reportedTotal, totalFromCounts),
+      paypalStatPaid: state.bucketCounts.payment_success,
+      paypalStatLinkOnly: state.bucketCounts.extract_success_payment_failed,
+      paypalStatExtractFailed: state.bucketCounts.extract_failed,
+      paypalBucketPaid: state.bucketCounts.payment_success,
+      paypalBucketLinkOnly: state.bucketCounts.extract_success_payment_failed,
+      paypalBucketExtractFailed: state.bucketCounts.extract_failed,
+    };
+    Object.entries(values).forEach(([id, value]) => {
+      const element = byId(id);
+      if (element) element.textContent = String(value);
+    });
+    document.querySelectorAll('[data-paypal-bucket]').forEach((button) => {
+      const active = button.dataset.paypalBucket === state.bucket;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
   }
 
   function renderRows() {
     const body = byId('paypalProtocolBody');
     if (!body) return;
-    if (!state.items.length) {
-      body.innerHTML = '<tr><td colspan="8" class="paypal-protocol-empty">当前筛选条件下暂无提链记录</td></tr>';
+    const items = visibleItems();
+    if (!items.length) {
+      body.innerHTML = `<tr><td colspan="10" class="paypal-protocol-empty">${html(BUCKETS[state.bucket].empty)}</td></tr>`;
       renderSelection();
       return;
     }
-    body.innerHTML = state.items.map((item, index) => {
+
+    body.innerHTML = items.map((item, index) => {
       const accountId = itemAccountId(item);
+      const key = itemKey(item);
       const status = itemStatus(item);
-      const busy = ['queued', 'running'].includes(status);
+      const extractBusy = ['queued', 'running'].includes(status);
       const link = itemLink(item);
       const qr = itemQr(item);
       const expiry = itemExpiryMs(item);
       const expired = isExpired(item);
-      const message = itemMessage(item);
-      const completed = item.extract_link_completed_at || item.completed_at || item.extract_link_checked_at || item.updated_at || '';
+      const extractMessage = itemExtractMessage(item);
+      const paymentMessage = itemPaymentMessage(item);
+      const completed = valueFrom(item, ['payment_completed_at', 'paypal_payment_completed_at', 'payment_updated_at', 'paypal_payment_checked_at', 'extract_link_completed_at', 'completed_at', 'extract_link_checked_at', 'updated_at']);
       const linkHtml = link && !expired && /^https?:\/\//i.test(link)
         ? `<a class="paypal-protocol-link" href="${html(link)}" target="_blank" rel="noopener noreferrer" title="${html(link)}">${html(link)}</a>`
-        : `<span class="paypal-protocol-link-empty" title="${html(link)}">${html(expired ? '链接已过期' : (link || message || '-'))}</span>`;
+        : `<span class="paypal-protocol-link-empty" title="${html(link)}">${html(expired ? '链接已过期' : (link || extractMessage || '-'))}</span>`;
       const countdown = expiry
         ? `<span class="paypal-protocol-countdown" data-paypal-countdown data-paypal-expires-at="${expiry}" title="到期：${html(formatDate(expiry))}">${html(formatRemaining(expiry))}</span><div class="paypal-protocol-sub">${html(formatDate(expiry))}</div>`
         : '<span class="paypal-protocol-link-empty">-</span>';
-      const checked = state.selected.has(accountId) ? ' checked' : '';
-      const disabled = accountId ? '' : ' disabled';
-      return `<tr data-paypal-account-id="${html(accountId)}">
-        <td class="paypal-col-check"><input type="checkbox" data-paypal-select="${html(accountId)}"${checked}${disabled}></td>
-        <td title="${html(itemEmail(item))}"><strong>${html(itemEmail(item) || ('#' + accountId))}</strong><div class="paypal-protocol-sub">代理：${html(proxySourceLabel(item))}</div></td>
-        <td>${statusView(item)}${message && status === 'failed' ? `<div class="paypal-protocol-error" title="${html(message)}">${html(message)}</div>` : ''}</td>
-        <td>${html(itemType(item))}</td>
+      const checked = state.selected.has(key) ? ' checked' : '';
+      const disabled = key ? '' : ' disabled';
+      const payAllowed = canRunPayment(item);
+      const extractActionLabel = ['success', 'expired', 'failed'].includes(status) ? '重新提链' : '手动提链';
+      const paymentAttempts = numberFrom(item, ['payment_attempt', 'paypal_payment_attempt', 'payment_attempts', 'payment_retry_count'], 0);
+      const billingCountry = valueFrom(item, ['payment_country', 'paypal_payment_country', 'billing_country']);
+      return `<tr data-paypal-item-key="${html(key)}" data-paypal-bucket-row="${html(itemBucket(item))}">
+        <td class="paypal-col-check"><input type="checkbox" data-paypal-select="${html(key)}"${checked}${disabled}></td>
+        <td title="${html(itemEmail(item))}"><strong>${html(itemEmail(item) || ('#' + accountId))}</strong><div class="paypal-protocol-sub">代理：${html(proxySourceLabel(item))}</div>${billingCountry ? `<div class="paypal-protocol-sub">账单国家：${html(billingCountry)}</div>` : ''}</td>
+        <td>${bucketView(item)}</td>
+        <td>${statusView(item)}${extractMessage && status === 'failed' ? `<div class="paypal-protocol-error" title="${html(extractMessage)}">${html(extractMessage)}</div>` : ''}<div class="paypal-protocol-sub">${html(itemType(item))}</div></td>
+        <td>${paymentStatusView(item)}${paymentAttempts ? `<div class="paypal-protocol-sub">尝试 ${paymentAttempts} 次</div>` : ''}${paymentMessage ? `<div class="paypal-protocol-error" title="${html(paymentMessage)}">${html(paymentMessage)}</div>` : ''}</td>
+        <td>${renderAttributes(item, index)}</td>
         <td>${linkHtml}</td>
         <td>${countdown}</td>
         <td title="${html(completed)}">${html(formatDate(completed))}</td>
         <td><div class="paypal-protocol-row-actions">
           ${link && !expired ? `<button type="button" class="good" data-paypal-copy-index="${index}">复制链接</button>` : ''}
           ${qr && !expired && /^https?:\/\//i.test(qr) ? `<button type="button" data-paypal-qr-index="${index}">二维码</button>` : ''}
-          <button type="button" data-paypal-extract="${html(accountId)}"${busy || !accountId ? ' disabled' : ''}>${status === 'success' || status === 'failed' ? '重新提链' : '手动提链'}</button>
+          ${payAllowed ? `<button type="button" class="primary" data-paypal-pay-index="${index}">${itemPaymentStatus(item) === 'failed' ? '重新支付' : '协议支付'}</button>` : ''}
+          <button type="button" data-paypal-extract="${html(accountId)}"${extractBusy || !accountId ? ' disabled' : ''}>${extractActionLabel}</button>
         </div></td>
       </tr>`;
     }).join('');
@@ -318,28 +638,53 @@
   }
 
   function renderSelection() {
-    const visibleIds = state.items.map(itemAccountId).filter(Boolean);
-    const selectedCount = visibleIds.filter((id) => state.selected.has(id)).length;
+    const items = visibleItems();
+    const visibleKeys = items.map(itemKey).filter(Boolean);
+    const selectedVisibleCount = visibleKeys.filter((key) => state.selected.has(key)).length;
+    const selection = selectedItems();
+    const paid = selection.filter(isPaymentSuccess);
+    const payable = selection.filter(canRunPayment);
+
     const selectAll = byId('paypalSelectAll');
     if (selectAll) {
-      selectAll.disabled = visibleIds.length === 0;
-      selectAll.checked = visibleIds.length > 0 && selectedCount === visibleIds.length;
-      selectAll.indeterminate = selectedCount > 0 && selectedCount < visibleIds.length;
+      selectAll.disabled = visibleKeys.length === 0;
+      selectAll.checked = visibleKeys.length > 0 && selectedVisibleCount === visibleKeys.length;
+      selectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleKeys.length;
     }
-    const selectedHint = byId('paypalSelectedHint');
-    if (selectedHint) selectedHint.textContent = `已选 ${state.selected.size}`;
-    const bulk = byId('paypalExtractSelected');
-    if (bulk) bulk.disabled = state.selected.size === 0;
+    const hint = byId('paypalSelectedHint');
+    if (hint) hint.textContent = `已选 ${selection.length}${paid.length ? ` · 支付成功 ${paid.length}` : ''}${payable.length ? ` · 可支付 ${payable.length}` : ''}`;
+
+    const extractButton = byId('paypalExtractSelected');
+    if (extractButton) extractButton.disabled = selection.length === 0;
+    const payButton = byId('paypalPaySelected');
+    if (payButton) {
+      payButton.disabled = payable.length === 0;
+      payButton.textContent = payable.length ? `支付选中 (${payable.length})` : '支付选中';
+    }
+    const exportButton = byId('paypalExportDelivery');
+    if (exportButton) {
+      exportButton.disabled = paid.length === 0;
+      exportButton.textContent = paid.length ? `导出发货 (${paid.length})` : '导出发货';
+    }
+    const twofaButton = byId('paypalSetupTwofa');
+    if (twofaButton) {
+      twofaButton.disabled = paid.length === 0;
+      twofaButton.textContent = paid.length ? `补跑 2FA (${paid.length})` : '补跑 2FA';
+    }
+    const deleteButton = byId('paypalDeleteSelected');
+    if (deleteButton) deleteButton.disabled = selection.length === 0;
   }
 
   function renderPager() {
     const mount = byId('paypalPager');
     if (!mount) return;
-    const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
+    const bucketTotal = state.bucketCounts[state.bucket];
+    const total = Number.isFinite(Number(bucketTotal)) ? Number(bucketTotal) : state.total;
+    const pages = Math.max(1, Math.ceil(total / state.pageSize));
     if (state.page > pages) state.page = pages;
     mount.innerHTML = `
       <button type="button" data-paypal-page="${state.page - 1}"${state.page <= 1 ? ' disabled' : ''}>上一页</button>
-      <span>第 ${state.page} / ${pages} 页 · 共 ${state.total} 条</span>
+      <span>第 ${state.page} / ${pages} 页 · 本分区 ${total} 条</span>
       <button type="button" data-paypal-page="${state.page + 1}"${state.page >= pages ? ' disabled' : ''}>下一页</button>
       <select id="paypalPageSize" aria-label="每页数量">
         ${[10, 25, 50, 100].map((size) => `<option value="${size}"${size === state.pageSize ? ' selected' : ''}>${size} 条/页</option>`).join('')}
@@ -361,13 +706,15 @@
     if (state.loading) return;
     state.loading = true;
     const body = byId('paypalProtocolBody');
-    if (body && !state.items.length) body.innerHTML = '<tr><td colspan="8" class="paypal-protocol-empty">正在加载…</td></tr>';
+    if (body && !state.items.length) body.innerHTML = '<tr><td colspan="10" class="paypal-protocol-empty">正在加载…</td></tr>';
     try {
       const params = new URLSearchParams({
         page: String(state.page),
         page_size: String(state.pageSize),
         limit: String(state.pageSize),
         offset: String((state.page - 1) * state.pageSize),
+        bucket: backendBucketValue(),
+        payment_bucket: backendBucketValue(),
       });
       if (state.status) params.set('status', state.status);
       if (state.query) params.set('q', state.query);
@@ -377,36 +724,52 @@
       if (payload.page) state.page = Math.max(1, Number(payload.page) || state.page);
       else if (payload.offset != null && payload.limit) state.page = Math.floor(Number(payload.offset) / Number(payload.limit)) + 1;
       if (payload.settings) applySettings(payload.settings);
-      renderQueue(payload);
+      state.queue = payload.queue || {};
+      renderSummary(payload);
       renderRows();
       renderPager();
       if (!options.silent) notify('Paypal协议已刷新');
     } catch (error) {
-      if (body) body.innerHTML = `<tr><td colspan="8" class="paypal-protocol-empty paypal-protocol-error">加载失败：${html(error.message)}</td></tr>`;
-      if (!options.silent) notify('加载提链记录失败：' + error.message);
+      if (body) body.innerHTML = `<tr><td colspan="10" class="paypal-protocol-empty paypal-protocol-error">加载失败：${html(error.message)}</td></tr>`;
+      if (!options.silent) notify('加载 Paypal协议记录失败：' + error.message);
     } finally {
       state.loading = false;
     }
   }
 
+  function settingBody(options = {}) {
+    const body = {
+      auto_extract: Boolean(byId('paypalAutoExtract') && byId('paypalAutoExtract').checked),
+      auto_payment: Boolean(byId('paypalAutoPayment') && byId('paypalAutoPayment').checked),
+      payment_country: String(byId('paypalPaymentCountry') && byId('paypalPaymentCountry').value || '').trim().toUpperCase(),
+      sms_country: String(byId('paypalSmsCountry') && byId('paypalSmsCountry').value || '').trim(),
+      sms_provider_ids: String(byId('paypalSmsProviderIds') && byId('paypalSmsProviderIds').value || '').trim(),
+      sms_timeout: Math.max(20, Number(byId('paypalSmsTimeout') && byId('paypalSmsTimeout').value) || 180),
+      payment_retries: Math.max(0, Number(byId('paypalPaymentRetries') && byId('paypalPaymentRetries').value) || 0),
+    };
+    const sensitive = [
+      ['proxy', 'paypalDefaultProxy'],
+      ['payment_proxy', 'paypalPaymentProxy'],
+      ['sms_api_key', 'paypalSmsApiKey'],
+    ];
+    sensitive.forEach(([key, id]) => {
+      if (state.settingsDirty.has(key) || options.clearSetting === key) body[key] = options.clearSetting === key ? '' : String(byId(id) && byId(id).value || '').trim();
+    });
+    return body;
+  }
+
   async function saveSettings(options = {}) {
-    const toggle = byId('paypalAutoExtract');
-    const proxyInput = byId('paypalDefaultProxy');
     const button = byId('paypalSaveSettings');
-    const body = { auto_extract: Boolean(toggle && toggle.checked) };
-    if (options.clearProxy) body.proxy = '';
-    else if (!options.autoOnly && state.proxyDirty) body.proxy = String(proxyInput && proxyInput.value || '').trim();
     if (button) button.disabled = true;
     try {
       const payload = await requestJson('/api/paypal-protocol/settings', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settingBody(options)),
       });
-      state.proxyDirty = false;
+      state.settingsDirty.clear();
       applySettings(payload);
-      notify(options.clearProxy ? '已恢复使用注册账号代理' : 'Paypal提链设置已保存');
+      notify(options.clearSetting ? '对应敏感设置已清除' : 'Paypal协议设置已保存');
     } catch (error) {
-      notify('保存提链设置失败：' + error.message);
-      await loadSettings();
+      notify('保存 Paypal协议设置失败：' + error.message);
     } finally {
       if (button) button.disabled = false;
     }
@@ -414,6 +777,16 @@
 
   function runProxyValue() {
     return String(byId('paypalRunProxy') && byId('paypalRunProxy').value || '').trim();
+  }
+
+  function runPaymentProxyValue() {
+    return String(byId('paypalRunPaymentProxy') && byId('paypalRunPaymentProxy').value || '').trim();
+  }
+
+  function selectionPayload(items) {
+    const accountIds = Array.from(new Set(items.map(itemAccountId).filter(Boolean))).map((value) => Number(value) || value);
+    const recordIds = Array.from(new Set(items.map(itemRecordId).filter(Boolean))).map((value) => Number(value) || value);
+    return { account_ids: accountIds, record_ids: recordIds, ids: recordIds };
   }
 
   async function extractOne(accountId, button) {
@@ -435,17 +808,18 @@
   }
 
   async function extractSelected(button) {
-    const accountIds = Array.from(state.selected).map((value) => Number(value) || value);
+    const items = selectedItems();
+    const accountIds = selectionPayload(items).account_ids;
     if (!accountIds.length) return;
     const proxy = runProxyValue();
     if (button) button.disabled = true;
     try {
       const body = { account_ids: accountIds };
       if (proxy) body.proxy = proxy;
-      const payload = await requestJson('/api/accounts/extract-link-bulk', {
+      const payload = await requestJson('/api/paypal-protocol/extract-bulk', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
-      const started = numberFrom(payload, ['started_count', 'queued_count'], 0);
+      const started = numberFrom(payload, ['started_count', 'queued_count', 'accepted_count'], 0);
       const skipped = numberFrom(payload, ['skipped_count'], 0) + numberFrom(payload, ['busy_count'], 0) + numberFrom(payload, ['failed_count'], 0);
       notify(`已入队 ${started} 个${skipped ? `，跳过/失败 ${skipped} 个` : ''}`);
       state.selected.clear();
@@ -453,6 +827,129 @@
     } catch (error) {
       notify('批量提链失败：' + error.message);
     } finally {
+      renderSelection();
+    }
+  }
+
+  async function runPayment(items, button) {
+    const payable = items.filter(canRunPayment);
+    if (!payable.length) return;
+    const proxy = runPaymentProxyValue();
+    if (button) button.disabled = true;
+    try {
+      const body = selectionPayload(payable);
+      if (proxy) body.proxy = proxy;
+      const payload = await requestJson('/api/paypal-protocol/payment-bulk', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const accepted = numberFrom(payload, ['accepted_count', 'started_count', 'queued_count'], payable.length);
+      const failed = numberFrom(payload, ['failed_count', 'skipped_count'], 0);
+      notify(`协议支付已入队 ${accepted} 个${failed ? `，跳过/失败 ${failed} 个` : ''}`);
+      state.selected.clear();
+      await loadPaypalProtocol({ silent: true });
+    } catch (error) {
+      notify('协议支付入队失败：' + error.message);
+    } finally {
+      if (button) button.disabled = false;
+      renderSelection();
+    }
+  }
+
+  async function deleteSelected(button) {
+    const items = selectedItems();
+    if (!items.length) return;
+    if (!root.confirm(`确定删除选中的 ${items.length} 条 Paypal协议记录吗？\n\n只删除协议记录，不删除账号本体。`)) return;
+    if (button) button.disabled = true;
+    try {
+      const payload = await requestJson('/api/paypal-protocol/delete-bulk', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selectionPayload(items)),
+      });
+      const deleted = numberFrom(payload, ['deleted_count', 'count'], items.length);
+      notify(`已删除 ${deleted} 条协议记录`);
+      state.selected.clear();
+      await loadPaypalProtocol({ silent: true });
+    } catch (error) {
+      notify('批量删除失败：' + error.message);
+    } finally {
+      if (button) button.disabled = false;
+      renderSelection();
+    }
+  }
+
+  function filenameFromDisposition(value) {
+    if (!value) return '';
+    const utf = value.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf) {
+      try { return decodeURIComponent(utf[1].replace(/["']/g, '')); } catch (_) { return utf[1]; }
+    }
+    const plain = value.match(/filename="?([^";]+)"?/i);
+    return plain ? plain[1] : '';
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function exportDelivery(button) {
+    const items = selectedItems().filter(isPaymentSuccess);
+    if (!items.length) return;
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch('/api/paypal-protocol/export-delivery', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selectionPayload(items)),
+      });
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok) {
+        const errorPayload = contentType.includes('json') ? await response.json().catch(() => ({})) : {};
+        throw new Error(errorPayload.error || ('HTTP ' + response.status));
+      }
+      let filename = filenameFromDisposition(response.headers.get('content-disposition')) || `paypal-delivery-${Date.now()}.txt`;
+      if (contentType.includes('json')) {
+        const payload = await response.json();
+        if (payload.download_url || payload.url) {
+          root.open(payload.download_url || payload.url, '_blank', 'noopener');
+        } else {
+          filename = payload.filename || filename;
+          const content = payload.content != null ? payload.content : (payload.data != null ? payload.data : payload.items);
+          const text = typeof content === 'string' ? content : JSON.stringify(content == null ? payload : content, null, 2);
+          downloadBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), filename);
+        }
+      } else {
+        downloadBlob(await response.blob(), filename);
+      }
+      notify(`已导出 ${items.length} 个支付成功账号`);
+    } catch (error) {
+      notify('导出发货失败：' + error.message);
+    } finally {
+      if (button) button.disabled = false;
+      renderSelection();
+    }
+  }
+
+  async function setupTwofa(button) {
+    const items = selectedItems().filter(isPaymentSuccess);
+    if (!items.length) return;
+    if (button) button.disabled = true;
+    try {
+      const payload = await requestJson('/api/paypal-protocol/setup-2fa', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selectionPayload(items)),
+      });
+      const accepted = numberFrom(payload, ['accepted_count', 'started_count', 'queued_count'], items.length);
+      const skipped = numberFrom(payload, ['skipped_count', 'failed_count'], 0);
+      notify(`2FA 补跑已入队 ${accepted} 个${skipped ? `，跳过/失败 ${skipped} 个` : ''}`);
+      state.selected.clear();
+      await loadPaypalProtocol({ silent: true });
+    } catch (error) {
+      notify('2FA 补跑失败：' + error.message);
+    } finally {
+      if (button) button.disabled = false;
       renderSelection();
     }
   }
@@ -485,6 +982,17 @@
     });
   }
 
+  function markSettingDirty(element) {
+    const mapping = {
+      paypalAutoExtract: 'auto_extract', paypalAutoPayment: 'auto_payment', paypalPaymentCountry: 'payment_country',
+      paypalDefaultProxy: 'proxy', paypalPaymentProxy: 'payment_proxy', paypalSmsCountry: 'sms_country',
+      paypalSmsProviderIds: 'sms_provider_ids', paypalSmsApiKey: 'sms_api_key', paypalSmsTimeout: 'sms_timeout',
+      paypalPaymentRetries: 'payment_retries',
+    };
+    const key = mapping[element.id];
+    if (key) state.settingsDirty.add(key);
+  }
+
   function bindEvents() {
     const search = byId('paypalSearch');
     let searchTimer = null;
@@ -493,6 +1001,7 @@
       searchTimer = setTimeout(() => {
         state.query = search.value.trim();
         state.page = 1;
+        state.selected.clear();
         loadPaypalProtocol({ silent: true });
       }, 280);
     });
@@ -505,63 +1014,110 @@
     });
     const refresh = byId('paypalRefresh');
     if (refresh) refresh.addEventListener('click', () => loadPaypalProtocol());
-    const auto = byId('paypalAutoExtract');
-    if (auto) auto.addEventListener('change', () => saveSettings({ autoOnly: true }));
-    const proxy = byId('paypalDefaultProxy');
-    if (proxy) proxy.addEventListener('input', () => { state.proxyDirty = true; });
+
+    ['paypalAutoExtract', 'paypalAutoPayment', 'paypalPaymentCountry', 'paypalDefaultProxy', 'paypalPaymentProxy', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey', 'paypalSmsTimeout', 'paypalPaymentRetries'].forEach((id) => {
+      const input = byId(id);
+      if (!input) return;
+      input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => markSettingDirty(input));
+    });
     const save = byId('paypalSaveSettings');
     if (save) save.addEventListener('click', () => saveSettings());
-    const clear = byId('paypalClearDefaultProxy');
-    if (clear) clear.addEventListener('click', () => saveSettings({ clearProxy: true }));
-    const show = byId('paypalToggleDefaultProxy');
-    if (show) show.addEventListener('click', () => {
-      if (!proxy) return;
-      const visible = proxy.type === 'text';
-      proxy.type = visible ? 'password' : 'text';
-      show.textContent = visible ? '显示' : '隐藏';
-    });
+
     const all = byId('paypalSelectAll');
     if (all) all.addEventListener('change', () => {
-      state.items.map(itemAccountId).filter(Boolean).forEach((id) => all.checked ? state.selected.add(id) : state.selected.delete(id));
+      visibleItems().map(itemKey).filter(Boolean).forEach((key) => all.checked ? state.selected.add(key) : state.selected.delete(key));
       renderRows();
     });
-    const bulk = byId('paypalExtractSelected');
-    if (bulk) bulk.addEventListener('click', () => extractSelected(bulk));
+    const extractButton = byId('paypalExtractSelected');
+    if (extractButton) extractButton.addEventListener('click', () => extractSelected(extractButton));
+    const payButton = byId('paypalPaySelected');
+    if (payButton) payButton.addEventListener('click', () => runPayment(selectedItems(), payButton));
+    const deleteButton = byId('paypalDeleteSelected');
+    if (deleteButton) deleteButton.addEventListener('click', () => deleteSelected(deleteButton));
+    const exportButton = byId('paypalExportDelivery');
+    if (exportButton) exportButton.addEventListener('click', () => exportDelivery(exportButton));
+    const twofaButton = byId('paypalSetupTwofa');
+    if (twofaButton) twofaButton.addEventListener('click', () => setupTwofa(twofaButton));
+
     const mount = byId('tab-paypal-protocol');
-    if (mount) {
-      mount.addEventListener('change', (event) => {
-        const checkbox = event.target.closest('[data-paypal-select]');
-        if (!checkbox) return;
-        const id = checkbox.dataset.paypalSelect;
-        checkbox.checked ? state.selected.add(id) : state.selected.delete(id);
+    if (!mount) return;
+    mount.addEventListener('change', (event) => {
+      const checkbox = event.target.closest('[data-paypal-select]');
+      if (checkbox) {
+        const key = checkbox.dataset.paypalSelect;
+        checkbox.checked ? state.selected.add(key) : state.selected.delete(key);
         renderSelection();
-      });
-      mount.addEventListener('click', (event) => {
-        const page = event.target.closest('[data-paypal-page]');
-        if (page && !page.disabled) {
-          state.page = Math.max(1, Number(page.dataset.paypalPage) || 1);
-          state.selected.clear();
-          loadPaypalProtocol({ silent: true });
-          return;
-        }
-        const extract = event.target.closest('[data-paypal-extract]');
-        if (extract) { extractOne(extract.dataset.paypalExtract, extract); return; }
-        const copy = event.target.closest('[data-paypal-copy-index]');
-        if (copy) { copyValue(itemLink(state.items[Number(copy.dataset.paypalCopyIndex)] || {})); return; }
-        const qr = event.target.closest('[data-paypal-qr-index]');
-        if (qr) {
-          const url = itemQr(state.items[Number(qr.dataset.paypalQrIndex)] || {});
-          if (/^https?:\/\//i.test(url)) root.open(url, '_blank', 'noopener');
-        }
-      });
-      mount.addEventListener('change', (event) => {
-        if (event.target.id !== 'paypalPageSize') return;
+        return;
+      }
+      if (event.target.id === 'paypalPageSize') {
         state.pageSize = Math.max(10, Number(event.target.value) || 25);
         state.page = 1;
         state.selected.clear();
         loadPaypalProtocol({ silent: true });
-      });
-    }
+      }
+    });
+    mount.addEventListener('click', (event) => {
+      const target = event.target;
+      const bucketButton = target.closest('[data-paypal-bucket]');
+      if (bucketButton) {
+        state.bucket = bucketButton.dataset.paypalBucket;
+        state.page = 1;
+        state.selected.clear();
+        loadPaypalProtocol({ silent: true });
+        return;
+      }
+      const page = target.closest('[data-paypal-page]');
+      if (page && !page.disabled) {
+        state.page = Math.max(1, Number(page.dataset.paypalPage) || 1);
+        state.selected.clear();
+        loadPaypalProtocol({ silent: true });
+        return;
+      }
+      const toggleSecret = target.closest('[data-paypal-toggle-secret]');
+      if (toggleSecret) {
+        const input = byId(toggleSecret.dataset.paypalToggleSecret);
+        if (!input) return;
+        const visible = input.type === 'text';
+        input.type = visible ? 'password' : 'text';
+        toggleSecret.textContent = visible ? '显示' : '隐藏';
+        return;
+      }
+      const clearSetting = target.closest('[data-paypal-clear-setting]');
+      if (clearSetting) {
+        const mapping = { proxy: 'paypalDefaultProxy', payment_proxy: 'paypalPaymentProxy', sms_api_key: 'paypalSmsApiKey' };
+        const key = clearSetting.dataset.paypalClearSetting;
+        const input = byId(mapping[key]);
+        if (input) input.value = '';
+        state.settingsDirty.add(key);
+        saveSettings({ clearSetting: key });
+        return;
+      }
+      const extract = target.closest('[data-paypal-extract]');
+      if (extract) { extractOne(extract.dataset.paypalExtract, extract); return; }
+      const pay = target.closest('[data-paypal-pay-index]');
+      if (pay) {
+        const item = visibleItems()[Number(pay.dataset.paypalPayIndex)];
+        if (item) runPayment([item], pay);
+        return;
+      }
+      const copy = target.closest('[data-paypal-copy-index]');
+      if (copy) {
+        const item = visibleItems()[Number(copy.dataset.paypalCopyIndex)] || {};
+        copyValue(itemLink(item));
+        return;
+      }
+      const property = target.closest('[data-paypal-copy-prop-index]');
+      if (property) {
+        const item = visibleItems()[Number(property.dataset.paypalCopyPropIndex)] || {};
+        copyAttribute(item, property.dataset.paypalCopyProp);
+        return;
+      }
+      const qr = target.closest('[data-paypal-qr-index]');
+      if (qr) {
+        const url = itemQr(visibleItems()[Number(qr.dataset.paypalQrIndex)] || {});
+        if (/^https?:\/\//i.test(url)) root.open(url, '_blank', 'noopener');
+      }
+    });
   }
 
   function init() {

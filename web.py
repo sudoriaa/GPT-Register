@@ -95,7 +95,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GPT 注册 WebUI 控制台")
     parser.add_argument("--host", default="127.0.0.1", help="绑定地址，默认仅本地 127.0.0.1")
     parser.add_argument("--port", type=int, default=5000, help="端口，默认 5000")
-    parser.add_argument("--open-browser", action="store_true", help="启动后自动打开浏览器")
+    parser.add_argument("--open-browser", action="store_true", help="启动后自动打开浏览器（仅显式传入时启用）")
     parser.add_argument("--auth-code", default=None, help="WebUI 授权码；也可配置 .env: WEBUI_AUTH_CODE=...")
     parser.add_argument("--verbose", action="store_true", help="详细日志")
     args = parser.parse_args()

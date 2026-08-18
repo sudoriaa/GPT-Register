@@ -27,7 +27,6 @@ if defined NEWPID (
   echo.
   echo 启动成功！ PID=%NEWPID%
   echo 访问 http://127.0.0.1:5000
-  start http://127.0.0.1:5000
 ) else (
   echo.
   echo 启动失败，请查看 logs\webui.log

@@ -25,6 +25,7 @@ from core import (
     db,
     plan_check_service,
     extract_link_service,
+    paypal_payment_service,
     codex_agent_service,
     live_check_service,
     subscription_service,
@@ -138,6 +139,11 @@ def _compact_account_for_list(row: dict) -> dict:
         "extract_link_status", "extract_link_ok", "extract_link_trigger", "extract_link_type",
         "extract_link_queued_at", "extract_link_started_at", "extract_link_completed_at",
         "extract_link_checked_at", "extract_link_job_id", "extract_link_proxy_source",
+        "paypal_payment_status", "paypal_payment_ok", "paypal_payment_trigger",
+        "paypal_payment_country", "paypal_payment_proxy_source", "paypal_payment_queued_at",
+        "paypal_payment_started_at", "paypal_payment_completed_at", "paypal_payment_checked_at",
+        "paypal_payment_attempt", "paypal_payment_max_attempts", "paypal_payment_settlement_status",
+        "paypal_payment_action",
         # 只保留独立的取消套餐任务状态；账号列表不再展示订阅查询结果。
         "subscription_cancel_status", "subscription_cancel_error",
         "subscription_cancel_queued_at", "subscription_cancel_started_at",
@@ -492,6 +498,9 @@ def create_app(auth_code: str | None = None) -> Flask:
     recovered_extract_links = db.recover_interrupted_extract_links()
     if recovered_extract_links:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的提链状态", recovered_extract_links)
+    recovered_paypal_payments = db.recover_interrupted_paypal_payments()
+    if recovered_paypal_payments:
+        logger.warning("已恢复 %s 个因 WebUI 重启中断的协议支付状态", recovered_paypal_payments)
     recovered_live_checks = db.recover_interrupted_live_checks()
     if recovered_live_checks:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的查活状态", recovered_live_checks)
@@ -1525,10 +1534,195 @@ def create_app(auth_code: str | None = None) -> Flask:
             "skipped_count": len(skipped),
         }), 202
 
+    @app.post("/api/paypal-protocol/payment")
+    @app.post("/api/accounts/paypal-payment")
+    def api_account_paypal_payment():
+        """为已提链成功账号启动一次 PayPal BA 协议支付。"""
+        data = request.get_json(silent=True) or {}
+        acc_id = data.get("account_id") or data.get("id")
+        try:
+            acc_id = int(acc_id)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "account_id 无效"}), 400
+        try:
+            queued = paypal_payment_service.enqueue_account_payment(
+                account_id=acc_id,
+                trigger="manual",
+                proxy=data.get("proxy") if "proxy" in data else None,
+                country=data.get("country") if "country" in data else None,
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
+        if queued.get("busy"):
+            return jsonify({"ok": False, **{k: v for k, v in queued.items() if k != "future"}}), 409
+        if not queued.get("accepted"):
+            return jsonify({"ok": False, **{k: v for k, v in queued.items() if k != "future"}}), 400
+        return jsonify({"ok": True, "started": True, **{k: v for k, v in queued.items() if k != "future"}}), 202
+
+    @app.post("/api/paypal-protocol/payment-bulk")
+    @app.post("/api/accounts/paypal-payment-bulk")
+    def api_accounts_paypal_payment_bulk():
+        """批量启动协议支付；只处理提链成功且链接未过期的账号。"""
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("record_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多支付 500 个账号"}), 400
+        started, busy, failed, skipped = [], [], [], []
+        seen = set()
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            acc = db.get_account(acc_id)
+            if not acc:
+                skipped.append({"id": acc_id, "reason": "账号不存在"})
+                continue
+            try:
+                queued = paypal_payment_service.enqueue_account_payment(
+                    account_id=acc_id,
+                    trigger="manual_bulk",
+                    proxy=data.get("proxy") if "proxy" in data else None,
+                    country=data.get("country") if "country" in data else None,
+                )
+            except Exception as exc:
+                failed.append({"id": acc_id, "email": acc.get("email"), "error": f"{type(exc).__name__}: {str(exc)[:240]}"})
+                continue
+            item = {"id": acc_id, "email": acc.get("email"), **{k: v for k, v in queued.items() if k != "future"}}
+            if queued.get("accepted"):
+                started.append(item)
+            elif queued.get("busy"):
+                busy.append(item)
+            else:
+                failed.append(item)
+        return jsonify({
+            "ok": True,
+            "started": started, "started_count": len(started),
+            "busy": busy, "busy_count": len(busy),
+            "failed": failed, "failed_count": len(failed),
+            "skipped": skipped, "skipped_count": len(skipped),
+        }), 202
+
+    @app.post("/api/paypal-protocol/delete-bulk")
+    @app.post("/api/paypal-protocol/records/delete-bulk")
+    def api_paypal_protocol_delete_bulk():
+        """批量删除 Paypal协议页记录，不删除账号本体。"""
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("record_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 5000:
+            return jsonify({"ok": False, "error": "单次最多删除 5000 条记录"}), 400
+        try:
+            account_ids = list(dict.fromkeys(int(item) for item in ids))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "account_ids 包含非法 ID"}), 400
+        cleared, skipped = db.clear_paypal_protocol_records(account_ids)
+        return jsonify({"ok": True, "deleted": cleared, "deleted_count": len(cleared), "skipped": skipped})
+
+    @app.post("/api/paypal-protocol/export-delivery")
+    @app.post("/api/paypal-protocol/ship-export")
+    def api_paypal_protocol_export_delivery():
+        """导出选中的支付成功账号发货行。"""
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("record_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 5000:
+            return jsonify({"ok": False, "error": "单次最多导出 5000 个账号"}), 400
+        lines, skipped, seen = [], [], set()
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            acc = db.get_account(acc_id)
+            if not acc:
+                skipped.append({"id": acc_id, "reason": "账号不存在"})
+                continue
+            if str(acc.get("paypal_payment_status") or "").lower() != "success":
+                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "不是支付成功账号"})
+                continue
+            line = _ship_line(acc)
+            if not line:
+                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "缺少 ChatGPT 密码，无法生成发货行"})
+                continue
+            lines.append(line)
+        if not lines:
+            return jsonify({"ok": False, "error": "没有可导出的支付成功账号", "skipped": skipped}), 400
+        from datetime import datetime as _dt
+        filename = f"paypal-payment-delivery-{_dt.now().strftime('%Y%m%d-%H%M%S')}.txt"
+        body = ("\n".join(lines) + "\n").encode("utf-8")
+        return Response(body, mimetype="text/plain; charset=utf-8", headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Exported-Count": str(len(lines)),
+            "X-Skipped-Count": str(len(skipped)),
+        })
+
+    @app.post("/api/paypal-protocol/setup-2fa")
+    @app.post("/api/paypal-protocol/repair-2fa")
+    def api_paypal_protocol_setup_2fa():
+        """只对选中的支付成功账号启动补跑 2FA。"""
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("record_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多补跑 500 个账号"}), 400
+        started, busy, failed, skipped = [], [], [], []
+        seen = set()
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"})
+                continue
+            if acc_id in seen:
+                continue
+            seen.add(acc_id)
+            acc = db.get_account(acc_id)
+            if not acc:
+                skipped.append({"id": acc_id, "reason": "账号不存在"})
+                continue
+            if str(acc.get("paypal_payment_status") or "").lower() != "success":
+                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "不是支付成功账号"})
+                continue
+            queued = twofa_service.enqueue_account_twofa(
+                account_id=acc_id,
+                email=acc.get("email") or "",
+                trigger="paypal_payment_success",
+                proxy=data.get("proxy") if "proxy" in data else None,
+            )
+            item = {"id": acc_id, "email": acc.get("email"), **queued}
+            if queued.get("accepted"):
+                started.append(item)
+            elif queued.get("busy"):
+                busy.append(item)
+            else:
+                failed.append(item)
+        return jsonify({
+            "ok": True,
+            "started": started, "started_count": len(started),
+            "busy": busy, "busy_count": len(busy),
+            "failed": failed, "failed_count": len(failed),
+            "skipped": skipped, "skipped_count": len(skipped),
+        }), 202
+
     @app.get("/api/paypal-protocol")
     def api_paypal_protocol():
-        """Paypal协议独立页面数据；只返回脱敏提链结果和倒计时。"""
+        """Paypal协议独立页面数据；返回提链/支付状态和脱敏账号属性。"""
         status = str(request.args.get("status", default="all") or "all").strip().lower()
+        bucket = str(request.args.get("bucket", default="all") or "all").strip().lower()
         q = str(request.args.get("q", default="") or "").strip()
         limit = request.args.get("limit", default=100, type=int)
         offset = request.args.get("offset", default=0, type=int)
@@ -1540,20 +1734,27 @@ def create_app(auth_code: str | None = None) -> Flask:
             offset = (max(1, page_arg) - 1) * max(1, limit or 100)
         limit = int(limit or 100)
         offset = int(offset or 0)
-        if status not in {"all", "queued", "running", "success", "failed", "expired", "stopped"}:
+        if status not in {"all", "queued", "running", "success", "failed", "expired", "stopped", "payment_success", "extract_only", "not_extracted", "payment_queued", "payment_running", "payment_failed"}:
             return jsonify({"ok": False, "error": "status 参数无效"}), 400
+        if bucket not in {"all", "payment_success", "extract_only", "not_extracted"}:
+            return jsonify({"ok": False, "error": "bucket 参数无效"}), 400
         snapshot = db.list_paypal_protocol_links(
             limit=max(1, min(500, limit)),
             offset=max(0, offset),
             status=status,
+            bucket=bucket,
             q=q,
         )
         snapshot.update({
             "ok": True,
             "page": max(1, int(offset // max(1, snapshot.get("limit") or 1) + 1)),
             "page_size": snapshot.get("limit"),
-            "settings": extract_link_service.public_settings(),
-            "queue": extract_link_service.queue_settings(),
+            "settings": {
+                **extract_link_service.public_settings(),
+                **paypal_payment_service.public_settings(),
+            },
+            "payment_settings": paypal_payment_service.public_settings(),
+            "queue": {"extract": extract_link_service.queue_settings(), "payment": paypal_payment_service.queue_settings()},
         })
         return jsonify(snapshot)
 
@@ -1562,13 +1763,17 @@ def create_app(auth_code: str | None = None) -> Flask:
         """读取 Paypal协议页设置；代理只返回是否已配置。"""
         return jsonify({
             "ok": True,
-            "settings": extract_link_service.public_settings(),
-            "queue": extract_link_service.queue_settings(),
+            "settings": {
+                **extract_link_service.public_settings(),
+                **paypal_payment_service.public_settings(),
+            },
+            "payment_settings": paypal_payment_service.public_settings(),
+            "queue": {"extract": extract_link_service.queue_settings(), "payment": paypal_payment_service.queue_settings()},
         })
 
     @app.post("/api/paypal-protocol/settings")
     def api_paypal_protocol_settings_update():
-        """更新自动提链开关和全局提链代理，不回显代理值。"""
+        """更新提链/协议支付运行设置；密钥和代理只写入 .env，不回显。"""
         data = request.get_json(silent=True) or {}
         updates = {}
         if "auto_extract" in data or "enabled" in data:
@@ -1585,6 +1790,63 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not isinstance(proxy, str) or len(proxy) > 2000:
                 return jsonify({"ok": False, "error": "proxy 必须是字符串且长度不超过 2000"}), 400
             updates["EXTRACT_LINK_PROXY"] = proxy.strip()
+        # PayPal 协议支付设置。页面不会发送 service，PayPal 服务码由配置默认值维护。
+        bool_fields = {
+            "auto_payment": "PAYPAL_PAYMENT_AUTO",
+            "payment_auto": "PAYPAL_PAYMENT_AUTO",
+            "service_autostart": "PAYPAL_PAYMENT_AUTOSTART_SERVICE",
+        }
+        for source_key, target_key in bool_fields.items():
+            if source_key not in data:
+                continue
+            value = data.get(source_key)
+            if isinstance(value, str):
+                value = value.strip().lower() in {"1", "true", "yes", "on", "y"}
+            if not isinstance(value, bool):
+                return jsonify({"ok": False, "error": f"{source_key} 必须是布尔值"}), 400
+            updates[target_key] = value
+        string_fields = {
+            "payment_country": "PAYPAL_PAYMENT_COUNTRY",
+            "payment_proxy": "PAYPAL_PAYMENT_PROXY",
+            "default_payment_proxy": "PAYPAL_PAYMENT_PROXY",
+            "service_base": "PAYPAL_PAYMENT_SERVICE_BASE",
+            "payment_project_path": "PAYPAL_PAYMENT_PROJECT_PATH",
+            "sms_country": "PAYPAL_PAYMENT_SMS_COUNTRY",
+            "sms_provider_ids": "PAYPAL_PAYMENT_SMS_PROVIDER_IDS",
+            "sms_api_base": "PAYPAL_PAYMENT_SMS_API_BASE",
+            "sms_api_key": "PAYPAL_PAYMENT_SMS_API_KEY",
+        }
+        for source_key, target_key in string_fields.items():
+            if source_key not in data:
+                continue
+            value = data.get(source_key)
+            if value is None:
+                value = ""
+            if not isinstance(value, str) or len(value) > 4000:
+                return jsonify({"ok": False, "error": f"{source_key} 必须是长度不超过 4000 的字符串"}), 400
+            updates[target_key] = value.strip()
+        if "payment_country" in data or "country" in data:
+            # The protocol project consumes an ISO-3166 alpha-2 billing
+            # country.  Validate before writing so a malformed value cannot
+            # make the subsequent settings response fail with a 500.
+            candidate_country = str(data.get("payment_country", data.get("country", "")) or "").strip().upper()
+            if not re.fullmatch(r"[A-Z]{2}", candidate_country):
+                return jsonify({"ok": False, "error": "payment_country 必须是两位国家代码"}), 400
+            updates["PAYPAL_PAYMENT_COUNTRY"] = candidate_country
+        int_fields = {
+            "sms_timeout": ("PAYPAL_PAYMENT_SMS_TIMEOUT", 20, 3600),
+            "payment_retries": ("PAYPAL_PAYMENT_MAX_RETRIES", 0, 20),
+        }
+        for source_key, (target_key, lower, upper) in int_fields.items():
+            if source_key not in data:
+                continue
+            try:
+                value = int(data.get(source_key))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": f"{source_key} 必须是整数"}), 400
+            if not lower <= value <= upper:
+                return jsonify({"ok": False, "error": f"{source_key} 范围为 {lower}-{upper}"}), 400
+            updates[target_key] = value
         if not updates:
             return jsonify({"ok": False, "error": "没有可更新的设置"}), 400
         try:
@@ -1597,7 +1859,11 @@ def create_app(auth_code: str | None = None) -> Flask:
         return jsonify({
             "ok": True,
             "updated": result.get("updated", []),
-            "settings": extract_link_service.public_settings(),
+            "settings": {
+                **extract_link_service.public_settings(),
+                **paypal_payment_service.public_settings(),
+            },
+            "payment_settings": paypal_payment_service.public_settings(),
         })
 
     @app.post("/api/accounts/codex-agent")

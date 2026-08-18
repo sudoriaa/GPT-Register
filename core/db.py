@@ -31,6 +31,9 @@ _PLAN_CHECK_QUEUE_STALE_SECONDS = 1800
 _SUBSCRIPTION_CANCEL_STATUSES = {"queued", "running", "success", "failed", "skipped"}
 _SUBSCRIPTION_CANCEL_STALE_SECONDS = 30 * 60
 _SUBSCRIPTION_CANCEL_QUEUE_STALE_SECONDS = 6 * 60 * 60
+_PAYPAL_PAYMENT_STATUSES = {"queued", "running", "success", "failed", "stopped", "skipped"}
+_PAYPAL_PAYMENT_STALE_SECONDS = 30 * 60
+_PAYPAL_PAYMENT_QUEUE_STALE_SECONDS = 6 * 60 * 60
 _PLAN_RESULT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 # An AT invalidation result is deliberately bounded in time.  This prevents a
 # forgotten, old status from being treated as a fresh destructive signal.
@@ -1910,6 +1913,186 @@ def recover_interrupted_extract_links() -> int:
         return recovered
 
 
+def claim_account_paypal_payment(
+    acc_id: int,
+    *,
+    trigger: str = "manual",
+    country: str = "",
+    proxy_source: str = "none",
+) -> bool:
+    """原子占用一个 PayPal 协议支付任务。"""
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        current = str(row.get("paypal_payment_status") or "").strip().lower()
+        if current in {"queued", "running"}:
+            try:
+                stamp_key = "paypal_payment_queued_at" if current == "queued" else "paypal_payment_started_at"
+                stale_after = _PAYPAL_PAYMENT_QUEUE_STALE_SECONDS if current == "queued" else _PAYPAL_PAYMENT_STALE_SECONDS
+                started_at = datetime.fromisoformat(str(row.get(stamp_key) or ""))
+                if (datetime.now() - started_at).total_seconds() < stale_after:
+                    return False
+            except (TypeError, ValueError):
+                pass
+        now = _now()
+        row["paypal_payment_status"] = "queued"
+        row["paypal_payment_ok"] = False
+        row["paypal_payment_trigger"] = str(trigger or "manual")[:80]
+        row["paypal_payment_country"] = str(country or "").strip().upper()[:2] or None
+        source = str(proxy_source or "none").strip().lower()
+        row["paypal_payment_proxy_source"] = source if source in {"custom", "global", "registration", "none"} else "none"
+        row["paypal_payment_queued_at"] = now
+        row["paypal_payment_started_at"] = None
+        row["paypal_payment_completed_at"] = None
+        row["paypal_payment_attempt"] = 0
+        row["paypal_payment_error"] = None
+        row["paypal_payment_message"] = "协议支付已入队"
+        for key in (
+            "paypal_payment_protocol_job_id",
+            "paypal_payment_settlement_status",
+            "paypal_payment_redirect_status",
+            "paypal_payment_action",
+            "paypal_payment_phone_country",
+            "paypal_payment_phone_last4",
+            "paypal_payment_activation_fingerprint",
+            "paypal_payment_result_json",
+        ):
+            row[key] = None
+        row["updated_at"] = now
+        _save_accounts(accounts)
+        return True
+
+
+def mark_account_paypal_payment_running(acc_id: int) -> bool:
+    """把已占用的协议支付任务标记为运行中。"""
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None or str(row.get("paypal_payment_status") or "") not in {"queued", "running"}:
+            return False
+        now = _now()
+        row["paypal_payment_status"] = "running"
+        row["paypal_payment_started_at"] = row.get("paypal_payment_started_at") or now
+        row["paypal_payment_error"] = None
+        row["paypal_payment_message"] = "协议支付运行中"
+        row["updated_at"] = now
+        _save_accounts(accounts)
+        return True
+
+
+def update_account_paypal_payment(acc_id: int, result: dict | None = None) -> bool:
+    """写入协议支付状态；调用方只应传入已脱敏的结果摘要。"""
+    result = result or {}
+    with _LOCK:
+        accounts = _load_accounts()
+        row = next((r for r in accounts if int(r.get("id") or 0) == int(acc_id)), None)
+        if row is None:
+            return False
+        status = str(result.get("status") or ("success" if result.get("ok") else "failed")).strip().lower()
+        if status not in _PAYPAL_PAYMENT_STATUSES:
+            status = "failed"
+        ok = bool(result.get("ok")) and status == "success"
+        now = _now()
+        row["paypal_payment_status"] = status
+        row["paypal_payment_ok"] = ok
+        row["paypal_payment_checked_at"] = result.get("checked_at") or now
+        if status in {"success", "failed", "stopped", "skipped"}:
+            row["paypal_payment_completed_at"] = result.get("completed_at") or now
+        if result.get("attempt") is not None:
+            try:
+                row["paypal_payment_attempt"] = max(0, int(result.get("attempt") or 0))
+            except (TypeError, ValueError):
+                pass
+        if result.get("max_attempts") is not None:
+            try:
+                row["paypal_payment_max_attempts"] = max(1, int(result.get("max_attempts") or 1))
+            except (TypeError, ValueError):
+                pass
+        row["paypal_payment_error"] = None if ok or status == "running" else str(result.get("error") or "")[:2000] or None
+        if result.get("message") is not None:
+            row["paypal_payment_message"] = str(result.get("message") or "")[:1000] or None
+        direct_fields = {
+            "protocol_job_id": "paypal_payment_protocol_job_id",
+            "settlement_status": "paypal_payment_settlement_status",
+            "redirect_status": "paypal_payment_redirect_status",
+            "payment_action": "paypal_payment_action",
+            "country": "paypal_payment_country",
+            "phone_country": "paypal_payment_phone_country",
+            "phone_last4": "paypal_payment_phone_last4",
+            "activation_fingerprint": "paypal_payment_activation_fingerprint",
+            "proxy_source": "paypal_payment_proxy_source",
+        }
+        for source_key, target_key in direct_fields.items():
+            if source_key in result and result.get(source_key) is not None:
+                value = str(result.get(source_key) or "").strip()
+                row[target_key] = value[:500] or None
+        payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+        if payload:
+            # The service layer passes a strict allow-list without BA/EC tokens,
+            # phone numbers, proxy credentials, cookies or access tokens.
+            row["paypal_payment_result_json"] = json.dumps(payload, ensure_ascii=False)[:8000]
+        row["updated_at"] = now
+        _save_accounts(accounts)
+        return True
+
+
+def recover_interrupted_paypal_payments() -> int:
+    """服务启动时把上次进程中断的支付任务变为可人工重试状态。"""
+    with _LOCK:
+        accounts = _load_accounts()
+        recovered = 0
+        now = _now()
+        for row in accounts:
+            if str(row.get("paypal_payment_status") or "") not in {"queued", "running"}:
+                continue
+            row["paypal_payment_status"] = "failed"
+            row["paypal_payment_ok"] = False
+            row["paypal_payment_error"] = "WebUI 重启导致协议支付任务中断，请重新支付"
+            row["paypal_payment_message"] = row["paypal_payment_error"]
+            row["paypal_payment_completed_at"] = now
+            row["updated_at"] = now
+            recovered += 1
+        if recovered:
+            _save_accounts(accounts)
+        return recovered
+
+
+def clear_paypal_protocol_records(account_ids: list[int] | None = None) -> tuple[list[dict], list[dict]]:
+    """只清除 Paypal协议页记录，不删除注册账号本体。"""
+    requested = {int(item) for item in (account_ids or []) if str(item).strip().isdigit()}
+    cleared: list[dict] = []
+    skipped: list[dict] = []
+    with _LOCK:
+        accounts = _load_accounts()
+        seen: set[int] = set()
+        for row in accounts:
+            row_id = int(row.get("id") or 0)
+            if row_id not in requested:
+                continue
+            seen.add(row_id)
+            if str(row.get("extract_link_status") or "") in {"queued", "running"} or str(row.get("paypal_payment_status") or "") in {"queued", "running"}:
+                skipped.append({"id": row_id, "email": row.get("email"), "reason": "任务运行中"})
+                continue
+            changed = False
+            for key in list(row):
+                if key.startswith("extract_link_") or key.startswith("paypal_payment_"):
+                    if row.get(key) is not None:
+                        changed = True
+                    row.pop(key, None)
+            if changed:
+                row["updated_at"] = _now()
+                cleared.append({"id": row_id, "email": row.get("email")})
+            else:
+                skipped.append({"id": row_id, "email": row.get("email"), "reason": "没有协议记录"})
+        for missing in sorted(requested - seen):
+            skipped.append({"id": missing, "reason": "账号不存在"})
+        if cleared:
+            _save_accounts(accounts)
+    return cleared, skipped
+
+
 def account_extract_link_is_fresh(acc_id: int) -> bool:
     """Whether an account already has a successful, unexpired payment link."""
     with _LOCK:
@@ -1918,8 +2101,27 @@ def account_extract_link_is_fresh(acc_id: int) -> bool:
             return False
         if not str(row.get("extract_link_long_url") or row.get("extract_link_copy_paste") or "").strip():
             return False
+        # Records written before ``extract_link_expires_at`` was introduced
+        # still follow the 60-minute link contract.  The list endpoint already
+        # synthesizes this timestamp for display; use the same fallback here
+        # so an older, otherwise valid record is payable until its real expiry.
+        expiry_value = str(row.get("extract_link_expires_at") or "").strip()
+        if not expiry_value:
+            expiry_value = str(
+                row.get("extract_link_completed_at")
+                or row.get("extract_link_checked_at")
+                or ""
+            ).strip()
+            if expiry_value:
+                try:
+                    base = datetime.fromisoformat(expiry_value.replace("Z", "+00:00"))
+                    expiry = base + timedelta(minutes=60)
+                    now = datetime.now(base.tzinfo) if base.tzinfo else datetime.now()
+                    return expiry > now
+                except (TypeError, ValueError):
+                    return False
         try:
-            expires_at = datetime.fromisoformat(str(row.get("extract_link_expires_at") or "").replace("Z", "+00:00"))
+            expires_at = datetime.fromisoformat(expiry_value.replace("Z", "+00:00"))
             now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.now()
             return expires_at > now
         except (TypeError, ValueError):
@@ -1949,15 +2151,21 @@ def list_paypal_protocol_links(
     limit: int = 100,
     offset: int = 0,
     status: str | None = None,
+    bucket: str | None = None,
     q: str | None = None,
 ) -> dict:
-    """Return a credential-free snapshot for the independent PayPal page."""
+    """Return the credential-free PayPal extraction/payment workspace."""
     wanted = str(status or "all").strip().lower()
+    wanted_bucket = str(bucket or "all").strip().lower()
     query = str(q or "").strip().lower()
     with _LOCK:
-        rows = [row for row in _load_accounts() if row.get("extract_link_status")]
+        rows = [
+            row for row in _load_accounts()
+            if row.get("extract_link_status") or row.get("paypal_payment_status")
+        ]
         rows.sort(key=lambda row: int(row.get("id") or 0), reverse=True)
-        items: list[dict] = []
+        credentials = _load_codex_refresh_credentials()
+        candidates: list[dict] = []
         now = datetime.now()
         for row in rows:
             raw_status = str(row.get("extract_link_status") or "idle").strip().lower()
@@ -1982,16 +2190,30 @@ def list_paypal_protocol_links(
                 except (TypeError, ValueError):
                     remaining_seconds = None
             display_status = "expired" if raw_status == "success" and expired else raw_status
-            if wanted not in {"", "all"} and display_status != wanted:
-                continue
+            payment_status = str(row.get("paypal_payment_status") or "idle").strip().lower()
+            if payment_status == "success":
+                payment_bucket = "payment_success"
+            # A link can be expired while still representing a successful
+            # extraction that was never paid.  Keep it in the "提链未支付"
+            # bucket so operators can see the history and manually re-extract;
+            # it must not be mixed into "未提链成功".
+            elif raw_status == "success":
+                payment_bucket = "extract_only"
+            else:
+                payment_bucket = "not_extracted"
             email = str(row.get("email") or "")
             link = str(row.get("extract_link_long_url") or row.get("extract_link_copy_paste") or "")
-            if query and query not in f"{email}\n{link}\n{display_status}".lower():
+            payment_error = _scrub_extract_public_text(row.get("paypal_payment_error"), row)
+            payment_message = _scrub_extract_public_text(row.get("paypal_payment_message"), row)
+            search_text = f"{email}\n{link}\n{display_status}\n{payment_status}\n{payment_bucket}\n{payment_error}\n{payment_message}".lower()
+            if query and query not in search_text:
                 continue
             item = {
                 "id": row.get("id"),
                 "email": email,
                 "status": display_status,
+                "payment_bucket": payment_bucket,
+                "payment_status": payment_status,
                 "extract_link_status": raw_status,
                 "extract_link_ok": bool(row.get("extract_link_ok")),
                 "extract_link_trigger": row.get("extract_link_trigger"),
@@ -2012,6 +2234,31 @@ def list_paypal_protocol_links(
                 "expired": expired,
                 "remaining_seconds": remaining_seconds,
                 "has_registration_proxy": bool(row.get("registration_proxy") or row.get("proxy_used")),
+                "has_access_token": bool(str(row.get("access_token") or "").strip()),
+                "has_refresh_token": bool(_select_codex_refresh_token(
+                    credentials,
+                    email=email,
+                    account_id=str(row.get("account_id") or ""),
+                )),
+                "has_chatgpt_password": bool(str(row.get("chatgpt_password") or "").strip()),
+                "totp_enabled": bool(str(row.get("totp_secret") or "").strip()),
+                "paypal_payment_ok": bool(row.get("paypal_payment_ok")),
+                "paypal_payment_status": payment_status,
+                "paypal_payment_trigger": row.get("paypal_payment_trigger"),
+                "paypal_payment_country": row.get("paypal_payment_country"),
+                "paypal_payment_proxy_source": row.get("paypal_payment_proxy_source"),
+                "payment_proxy_source": row.get("paypal_payment_proxy_source"),
+                "paypal_payment_queued_at": row.get("paypal_payment_queued_at"),
+                "paypal_payment_started_at": row.get("paypal_payment_started_at"),
+                "paypal_payment_completed_at": row.get("paypal_payment_completed_at"),
+                "paypal_payment_checked_at": row.get("paypal_payment_checked_at"),
+                "paypal_payment_attempt": row.get("paypal_payment_attempt"),
+                "paypal_payment_max_attempts": row.get("paypal_payment_max_attempts"),
+                "paypal_payment_protocol_job_id": row.get("paypal_payment_protocol_job_id"),
+                "paypal_payment_settlement_status": row.get("paypal_payment_settlement_status"),
+                "paypal_payment_redirect_status": row.get("paypal_payment_redirect_status"),
+                "paypal_payment_action": row.get("paypal_payment_action"),
+                "paypal_payment_phone_country": row.get("paypal_payment_phone_country"),
             }
             error = _scrub_extract_public_text(row.get("extract_link_error"), row)
             message = _scrub_extract_public_text(row.get("extract_link_message"), row)
@@ -2019,13 +2266,38 @@ def list_paypal_protocol_links(
                 item["extract_link_error"] = error
             if message:
                 item["extract_link_message"] = message
-            items.append({key: value for key, value in item.items() if value is not None})
+            if payment_error:
+                item["paypal_payment_error"] = payment_error
+                item["payment_error"] = payment_error
+            if payment_message:
+                item["paypal_payment_message"] = payment_message
+                item["payment_message"] = payment_message
+            candidates.append({key: value for key, value in item.items() if value is not None})
 
-        total = len(items)
         counts: dict[str, int] = {}
-        for item in items:
+        bucket_counts = {"payment_success": 0, "extract_only": 0, "not_extracted": 0}
+        payment_counts: dict[str, int] = {}
+        for item in candidates:
             item_status = str(item.get("status") or "unknown")
             counts[item_status] = counts.get(item_status, 0) + 1
+            item_bucket = str(item.get("payment_bucket") or "not_extracted")
+            bucket_counts[item_bucket] = bucket_counts.get(item_bucket, 0) + 1
+            one_payment_status = str(item.get("payment_status") or "idle")
+            payment_counts[one_payment_status] = payment_counts.get(one_payment_status, 0) + 1
+
+        items = candidates
+        if wanted not in {"", "all"}:
+            if wanted in {"payment_success", "extract_only", "not_extracted"}:
+                items = [item for item in items if item.get("payment_bucket") == wanted]
+            elif wanted.startswith("payment_"):
+                requested_payment = wanted.removeprefix("payment_")
+                items = [item for item in items if item.get("payment_status") == requested_payment]
+            else:
+                items = [item for item in items if item.get("status") == wanted]
+        if wanted_bucket not in {"", "all"}:
+            items = [item for item in items if item.get("payment_bucket") == wanted_bucket]
+
+        total = len(items)
         safe_offset = max(0, int(offset or 0))
         safe_limit = max(1, min(500, int(limit or 100)))
         page = items[safe_offset:safe_offset + safe_limit]
@@ -2037,6 +2309,8 @@ def list_paypal_protocol_links(
             "offset": safe_offset,
             "limit": safe_limit,
             "counts": counts,
+            "bucket_counts": bucket_counts,
+            "payment_counts": payment_counts,
             "revision": f"{total}:{revision}",
         }
 

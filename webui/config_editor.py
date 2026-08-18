@@ -647,6 +647,63 @@ EDITABLE_FIELDS = [
         "key": "EXTRACT_LINK_WORKERS", "file": "extract_link.py", "type": "int", "group": "提链",
         "label": "提链并发数", "help": "批量提链后台线程数，建议 1-4",
     },
+    # ---- PayPal 协议支付 ----
+    {
+        "key": "PAYPAL_PAYMENT_AUTO", "file": "paypal_payment.py", "type": "bool", "group": "协议支付",
+        "label": "提链后自动支付", "help": "提链成功后自动进入 PayPal BA 协议支付队列",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_PROJECT_PATH", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "PP协议项目路径", "help": "完整 paypal-agreement-protocol 项目目录；兼容包含 .integration-web.py 的目录",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_PYTHON", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "PP协议 Python路径", "help": "可留空，优先使用 PP协议项目 .venv，其次当前 Python",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_SERVICE_BASE", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "PP协议服务地址", "help": "默认 http://127.0.0.1:18097；自动启动或连接已运行服务",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_AUTOSTART_SERVICE", "file": "paypal_payment.py", "type": "bool", "group": "协议支付",
+        "label": "自动启动PP协议服务", "help": "服务未运行时从项目路径自动启动 web.py/.integration-web.py",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_COUNTRY", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "协议支付账单国家", "help": "统一两位国家代码，例如 GB、US、BR；PayPal 资料按此国家生成",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_PROXY", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "协议支付默认代理", "help": "可选；本次覆盖 > 此处代理 > 账号注册代理", "storage": "env", "secret": True,
+    },
+    {
+        "key": "PAYPAL_PAYMENT_SMS_API_BASE", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "SMSBower API地址", "help": "默认 https://smsbower.page/stubs/handler_api.php",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_SMS_API_KEY", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "支付接码 API Key", "help": "SMSBower API Key，保存在 .env 且页面不回显", "storage": "env", "secret": True,
+    },
+    {
+        "key": "PAYPAL_PAYMENT_SMS_COUNTRY", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "支付接码国家", "help": "SMSBower country 数字 ID，与账单国家独立配置",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_SMS_PROVIDER_IDS", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "支付接码渠道号", "help": "SMSBower providerIds，多个渠道用逗号分隔，留空自动选择",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_SMS_TIMEOUT", "file": "paypal_payment.py", "type": "int", "group": "协议支付",
+        "label": "支付接码超时(秒)", "help": "单个号码等待 PayPal 短信验证码的最长时间",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_MAX_RETRIES", "file": "paypal_payment.py", "type": "int", "group": "协议支付",
+        "label": "支付失败重接次数", "help": "取码失败、验证码失败和支付失败都算一轮并更换号码重试",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_WORKERS", "file": "paypal_payment.py", "type": "int", "group": "协议支付",
+        "label": "协议支付并发数", "help": "独立支付队列线程数，建议 1-4",
+    },
     # ---- Codex 配置 ----
     {
         "key": "SUB2API_AUTO_EXPORT", "file": "sub2api.py", "type": "bool", "group": "Codex",

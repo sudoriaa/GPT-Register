@@ -38,6 +38,8 @@ SECRET_ENV_KEYS: dict[str, str] = {
     "CPA_MANAGEMENT_KEY": "CPA 管理接口密钥",
     "EXTRACT_LINK_CDK": "提链服务 CDK",
     "EXTRACT_LINK_PROXY": "PayPal 提链默认代理（可能包含认证信息）",
+    "PAYPAL_PAYMENT_PROXY": "PayPal 协议支付默认代理（可能包含认证信息）",
+    "PAYPAL_PAYMENT_SMS_API_KEY": "PayPal 协议支付 SMSBower API Key",
     "SUB2API_API_KEY": "sub2api 管理接口 API Key",
     "SUB2API_API_TOKEN": "sub2api 管理接口鉴权 Token（旧配置名，兼容）",
     "SMS_API_KEY": "接码平台 API Key（如 GrizzlySMS）",
