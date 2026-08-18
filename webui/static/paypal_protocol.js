@@ -448,7 +448,7 @@
                 </label>
                 <label class="paypal-protocol-route-option" data-paypal-route-option="local">
                   <input type="radio" name="paypalRoute" id="paypalRouteLocal" value="local">
-                  <span><strong>本地提链 + 支付</strong><small>本地提链项目生成链接，再由本地协议项目通过 SMSBower 完成支付。</small></span>
+                  <span><strong>本地提链 + 支付</strong><small>本地提链项目生成链接，再由本地协议项目通过所选接码平台完成支付。</small></span>
                   <em>本地项目</em>
                 </label>
               </div>
@@ -558,14 +558,20 @@
                 </div>
               </details>
               <details class="paypal-protocol-disclosure" id="paypalLocalPaymentDetails">
-                <summary><span><strong>本地协议支付 + SMSBower</strong><small>账单国家、代理、接码渠道、超时与失败重试</small></span><span class="paypal-protocol-disclosure-action">设置</span></summary>
+                <summary><span><strong>本地协议支付 + 接码</strong><small>可选 SMSBower 或 VAK；账单国家、代理、国家、超时与失败重试</small></span><span class="paypal-protocol-disclosure-action">设置</span></summary>
                 <div class="paypal-protocol-disclosure-body">
                   <div class="paypal-protocol-settings-grid is-local">
                     <label class="paypal-protocol-field" for="paypalPaymentCountry"><span>账单国家</span><input type="text" id="paypalPaymentCountry" maxlength="2" autocomplete="off" placeholder="GB"><small>统一生成该国家账单资料。</small></label>
                     <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalPaymentProxy"><span>全局支付代理（选填）</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalPaymentProxy" autocomplete="new-password" spellcheck="false" placeholder="留空则使用账号注册代理"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalPaymentProxy">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="payment_proxy">清除</button></span><small>仅覆盖本地支付阶段。</small></label>
-                    <label class="paypal-protocol-field" for="paypalSmsCountry"><span>SMSBower 国家</span><input type="text" id="paypalSmsCountry" maxlength="32" autocomplete="off" placeholder="例如 16"><small>接码服务固定为 PayPal。</small></label>
-                    <label class="paypal-protocol-field" for="paypalSmsProviderIds"><span>渠道号</span><input type="text" id="paypalSmsProviderIds" autocomplete="off" spellcheck="false" placeholder="多个渠道用逗号分隔"><small>按填写顺序选择渠道。</small></label>
-                    <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalSmsApiKey"><span>SMSBower API Key</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalSmsApiKey" autocomplete="new-password" spellcheck="false" placeholder="填写 API Key"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalSmsApiKey">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="sms_api_key">清除</button></span><small>已保存的 Key 不会回显。</small></label>
+                    <label class="paypal-protocol-field" for="paypalSmsProvider"><span>接码平台</span><select id="paypalSmsProvider"><option value="smsbower">SMSBower</option><option value="vak">VAK</option></select><small>选择 VAK 后使用 VAK 参数。</small></label>
+                    <label class="paypal-protocol-field" data-paypal-sms-provider="smsbower" for="paypalSmsCountry"><span>SMSBower 国家</span><input type="text" id="paypalSmsCountry" maxlength="32" autocomplete="off" placeholder="例如 16"><small>接码服务固定为 PayPal。</small></label>
+                    <label class="paypal-protocol-field" data-paypal-sms-provider="smsbower" for="paypalSmsProviderIds"><span>SMSBower 渠道号</span><input type="text" id="paypalSmsProviderIds" autocomplete="off" spellcheck="false" placeholder="多个渠道用逗号分隔"><small>按填写顺序选择渠道。</small></label>
+                    <label class="paypal-protocol-field paypal-protocol-field-wide" data-paypal-sms-provider="smsbower" for="paypalSmsApiKey"><span>SMSBower API Key</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalSmsApiKey" autocomplete="new-password" spellcheck="false" placeholder="填写 API Key"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalSmsApiKey">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="sms_api_key">清除</button></span><small>已保存的 Key 不会回显。</small></label>
+                    <label class="paypal-protocol-field paypal-protocol-field-wide" data-paypal-sms-provider="vak" for="paypalVakApiBase"><span>VAK API 地址</span><input type="url" id="paypalVakApiBase" autocomplete="off" placeholder="https://vak-sms.com"><small>客户端会自动使用 /api 接口。</small></label>
+                    <label class="paypal-protocol-field" data-paypal-sms-provider="vak" for="paypalVakCountry"><span>VAK 国家</span><input type="text" id="paypalVakCountry" maxlength="64" autocomplete="off" placeholder="例如 gb"><small>按 VAK 后台国家代码填写。</small></label>
+                    <label class="paypal-protocol-field" data-paypal-sms-provider="vak" for="paypalVakService"><span>VAK 服务码</span><input type="text" id="paypalVakService" maxlength="64" autocomplete="off" placeholder="PayPal 服务码 pp"><small>按 VAK 服务列表填写；PayPal 服务码为 pp。</small></label>
+                    <label class="paypal-protocol-field" data-paypal-sms-provider="vak" for="paypalVakOperator"><span>VAK 运营商（选填）</span><input type="text" id="paypalVakOperator" maxlength="120" autocomplete="off" placeholder="留空自动选择"><small>可按国家指定运营商。</small></label>
+                    <label class="paypal-protocol-field paypal-protocol-field-wide" data-paypal-sms-provider="vak" for="paypalVakApiKey"><span>VAK API Key</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalVakApiKey" autocomplete="new-password" spellcheck="false" placeholder="填写 VAK API Key"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalVakApiKey">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="vak_api_key">清除</button></span><small>已保存的 Key 不会回显。</small></label>
                     <label class="paypal-protocol-field" for="paypalSmsTimeout"><span>接码超时（秒）</span><input type="number" id="paypalSmsTimeout" min="20" max="3600" step="1" value="120"><small>单次等待验证码最长时间。</small></label>
                     <label class="paypal-protocol-field" for="paypalPaymentRetries"><span>失败重试次数</span><input type="number" id="paypalPaymentRetries" min="0" max="20" step="1" value="2"><small>没收到码或支付失败都会计入。</small></label>
                   </div>
@@ -583,7 +589,8 @@
   const SETTING_INPUT_IDS = [
     'paypalAutoExtract', 'paypalCdkBaseUrl', 'paypalCdkCountry', 'paypalCdkProtocolCountry',
     'paypalCdkRetries', 'paypalCdkSmsApiKey', 'paypalDefaultProxy', 'paypalPaymentCountry',
-    'paypalPaymentProxy', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey',
+    'paypalPaymentProxy', 'paypalSmsProvider', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey',
+    'paypalVakApiBase', 'paypalVakCountry', 'paypalVakService', 'paypalVakOperator', 'paypalVakApiKey',
     'paypalSmsTimeout', 'paypalPaymentRetries',
   ];
 
@@ -629,6 +636,27 @@
     return selectedRoute() !== routeFromSettings(state.settings);
   }
 
+  function normalizeSmsProvider(value) {
+    const provider = String(value || 'smsbower').trim().toLowerCase();
+    return ['vak', 'vaksms', 'vak_sms', 'vak-sms', 'vakapi', 'vak_api'].includes(provider) ? 'vak' : 'smsbower';
+  }
+
+  function syncSmsProviderUi(value) {
+    const provider = normalizeSmsProvider(value || (byId('paypalSmsProvider') && byId('paypalSmsProvider').value));
+    const select = byId('paypalSmsProvider');
+    if (select && select.value !== provider) select.value = provider;
+    document.querySelectorAll('[data-paypal-sms-provider]').forEach((field) => {
+      const active = field.dataset.paypalSmsProvider === provider;
+      field.hidden = !active;
+      field.setAttribute('aria-hidden', active ? 'false' : 'true');
+    });
+    const summary = document.querySelector('#paypalLocalPaymentDetails summary small');
+    if (summary) summary.textContent = provider === 'vak'
+      ? 'VAK 取号、国家、服务码、代理、超时与失败重试'
+      : 'SMSBower 取号、国家、渠道、代理、超时与失败重试';
+    return provider;
+  }
+
   function syncRouteUi(routeValue) {
     const route = routeValue === 'local' ? 'local' : routeValue === 'cdk_web' ? 'cdk_web' : routeFromSettings(routeValue || state.settings);
     const cdkActive = route === 'cdk_web';
@@ -643,6 +671,10 @@
       panel.hidden = panel.dataset.paypalRoutePanel !== route;
       panel.setAttribute('aria-hidden', panel.hidden ? 'true' : 'false');
     });
+    const draftSmsProvider = state.settingsDirty.has('sms_provider')
+      ? (byId('paypalSmsProvider') && byId('paypalSmsProvider').value)
+      : valueFrom(state.settings, ['sms_provider']);
+    syncSmsProviderUi(draftSmsProvider || 'smsbower');
 
     const title = byId('paypalRouteTitle');
     const description = byId('paypalRouteDescription');
@@ -667,15 +699,15 @@
       if (managementHint) managementHint.textContent = '管理 CDK 池、1K50 工作台、国家、重试与接码参数。';
     } else {
       if (title) title.textContent = '本地提链 + 支付';
-      if (description) description.textContent = '本地提链项目生成链接，再由本地协议项目通过 SMSBower 完成支付。';
+      if (description) description.textContent = '本地提链项目生成链接，再由本地协议项目通过所选接码平台完成支付。';
       if (extractTitle) extractTitle.textContent = '本地项目提链';
       if (extractHint) extractHint.textContent = '默认使用账号注册代理，可自定义覆盖';
       if (paymentTitle) paymentTitle.textContent = '本地协议支付';
-      if (paymentHint) paymentHint.textContent = 'SMSBower 接码，失败按设置重新执行';
+      if (paymentHint) paymentHint.textContent = 'SMSBower/VAK 接码，失败按设置重新执行';
       if (autoHint) autoHint.textContent = '开启后，资格通过且 AT 有效的账号自动进入本地完整流水线；账号列表仍可手动加入。';
       if (facts) facts.innerHTML = '<span>本地项目提链</span><span>提链成功后继续支付</span><span>注册代理或自定义代理</span>';
       if (managementTitle) managementTitle.textContent = '本地路线设置';
-      if (managementHint) managementHint.textContent = '本地提链代理与协议支付、SMSBower 参数分别维护。';
+      if (managementHint) managementHint.textContent = '本地提链代理与协议支付、SMSBower/VAK 参数分别维护。';
     }
 
     const routeState = byId('paypalRouteState');
@@ -694,7 +726,7 @@
         ? `当前仍运行${actualRoute === 'cdk_web' ? ' CDK' : '本地'}路线；保存后才会切换到${cdkActive ? ' CDK' : '本地'}路线。`
         : cdkActive
           ? '当前路线：CDK 网站托管。提交 AT + CDK 后，由 1K50 连续完成提链与支付。'
-          : '当前路线：本地项目。提链成功后自动进入本地协议支付与 SMSBower 接码。';
+          : '当前路线：本地项目。提链成功后自动进入本地协议支付，可选择 SMSBower 或 VAK 接码。';
     }
   }
 
@@ -715,10 +747,15 @@
     applyMaskedSetting('paypalCdkSmsApiKey', 'cdk_sms_api_key', cdkSmsConfigured, '', 'server-auto 可留空');
 
     setInputIfClean('paypalPaymentCountry', 'payment_country', valueFrom(settings, ['payment_country', 'billing_country', 'extract_link_country']) || 'GB');
+    setInputIfClean('paypalSmsProvider', 'sms_provider', valueFrom(settings, ['sms_provider']) || 'smsbower');
     setInputIfClean('paypalSmsCountry', 'sms_country', valueFrom(settings, ['sms_country', 'smsbower_country']) || '16');
     const providerIds = valueFrom(settings, ['sms_provider_ids', 'provider_ids', 'sms_channels']);
     setInputIfClean('paypalSmsProviderIds', 'sms_provider_ids', Array.isArray(providerIds) ? providerIds.join(',') : providerIds);
     setInputIfClean('paypalSmsTimeout', 'sms_timeout', valueFrom(settings, ['sms_timeout', 'sms_timeout_seconds']) || 120);
+    setInputIfClean('paypalVakApiBase', 'vak_api_base', valueFrom(settings, ['vak_api_base']) || 'https://vak-sms.com');
+    setInputIfClean('paypalVakCountry', 'vak_country', valueFrom(settings, ['vak_country']) || 'gb');
+    setInputIfClean('paypalVakService', 'vak_service', valueFrom(settings, ['vak_service']) || 'pp');
+    setInputIfClean('paypalVakOperator', 'vak_operator', valueFrom(settings, ['vak_operator']) || '');
     const retrySetting = valueFrom(settings, ['payment_retries', 'retry_count']);
     setInputIfClean('paypalPaymentRetries', 'payment_retries', retrySetting == null || retrySetting === '' ? 2 : retrySetting);
 
@@ -726,8 +763,14 @@
     applyMaskedSetting('paypalDefaultProxy', 'proxy', extractProxyConfigured, valueFrom(settings, ['proxy_masked', 'masked_proxy', 'proxy_display']), '留空则使用账号注册代理');
     const paymentProxyConfigured = booleanFrom(settings, ['payment_proxy_configured', 'has_payment_proxy'], false);
     applyMaskedSetting('paypalPaymentProxy', 'payment_proxy', paymentProxyConfigured, valueFrom(settings, ['payment_proxy_masked', 'masked_payment_proxy']), '留空则使用账号注册代理');
-    const smsKeyConfigured = booleanFrom(settings, ['sms_api_key_configured', 'has_sms_api_key', 'smsbower_api_key_configured'], false);
+    const smsKeyConfigured = booleanFrom(settings, ['smsbower_api_key_configured', 'sms_api_key_configured', 'has_sms_api_key'], false);
     applyMaskedSetting('paypalSmsApiKey', 'sms_api_key', smsKeyConfigured, valueFrom(settings, ['sms_api_key_masked', 'smsbower_api_key_masked']), '填写 SMSBower API Key');
+    const vakKeyConfigured = booleanFrom(settings, ['vak_api_key_configured'], false);
+    applyMaskedSetting('paypalVakApiKey', 'vak_api_key', vakKeyConfigured, '', '填写 VAK API Key');
+    const draftSmsProvider = state.settingsDirty.has('sms_provider')
+      ? (byId('paypalSmsProvider') && byId('paypalSmsProvider').value)
+      : valueFrom(settings, ['sms_provider']);
+    syncSmsProviderUi(draftSmsProvider || 'smsbower');
 
     const uiRoute = routeDirty ? draftRoute : routeFromSettings(settings);
     syncRouteUi(uiRoute);
@@ -744,7 +787,9 @@
       } else {
         const extractProxyText = extractProxyConfigured ? '提链使用全局代理' : '提链默认使用注册代理';
         const paymentProxyText = paymentProxyConfigured ? '支付使用全局代理' : '支付默认使用注册代理';
-        status.textContent = `${autoText}；本地提链后自动支付；${extractProxyText}；${paymentProxyText}；${smsKeyConfigured ? 'SMSBower Key 已配置' : 'SMSBower Key 未配置'}。`;
+        const smsProvider = String(valueFrom(settings, ['sms_provider']) || 'smsbower').toUpperCase();
+        const activeKey = smsProvider === 'VAK' ? vakKeyConfigured : smsKeyConfigured;
+        status.textContent = `${autoText}；本地提链后自动支付；${extractProxyText}；${paymentProxyText}；${smsProvider} Key ${activeKey ? '已配置' : '未配置'}。`;
       }
     }
     setSettingsControlsDisabled(state.settingsSaving);
@@ -1057,8 +1102,13 @@
         auto_payment: true,
         service_autostart: true,
         payment_country: String(byId('paypalPaymentCountry') && byId('paypalPaymentCountry').value || 'GB').trim().toUpperCase(),
+        sms_provider: String(byId('paypalSmsProvider') && byId('paypalSmsProvider').value || 'smsbower').trim().toLowerCase(),
         sms_country: String(byId('paypalSmsCountry') && byId('paypalSmsCountry').value || '16').trim(),
         sms_provider_ids: String(byId('paypalSmsProviderIds') && byId('paypalSmsProviderIds').value || '').trim(),
+        vak_api_base: String(byId('paypalVakApiBase') && byId('paypalVakApiBase').value || 'https://vak-sms.com').trim(),
+        vak_country: String(byId('paypalVakCountry') && byId('paypalVakCountry').value || 'gb').trim().toLowerCase(),
+        vak_service: String(byId('paypalVakService') && byId('paypalVakService').value || 'pp').trim(),
+        vak_operator: String(byId('paypalVakOperator') && byId('paypalVakOperator').value || '').trim(),
         sms_timeout: Math.min(3600, Math.max(20, Number(byId('paypalSmsTimeout') && byId('paypalSmsTimeout').value) || 120)),
         payment_retries: Math.min(20, Math.max(0, Number(byId('paypalPaymentRetries') && byId('paypalPaymentRetries').value) || 0)),
       });
@@ -1066,11 +1116,13 @@
         ['proxy', 'paypalDefaultProxy'],
         ['payment_proxy', 'paypalPaymentProxy'],
         ['sms_api_key', 'paypalSmsApiKey'],
+        ['vak_api_key', 'paypalVakApiKey'],
       );
     }
     sensitive.forEach(([key, id]) => {
       if (state.settingsDirty.has(key) || options.clearSetting === key) body[key] = options.clearSetting === key ? '' : String(byId(id) && byId(id).value || '').trim();
     });
+    if (options.clearSetting) body.clear_setting = options.clearSetting;
     return body;
   }
 
@@ -1379,7 +1431,8 @@
       paypalCdkCountry: 'cdk_country', paypalCdkProtocolCountry: 'cdk_protocol_country', paypalCdkRetries: 'cdk_retries',
       paypalCdkSmsApiKey: 'cdk_sms_api_key', paypalDefaultProxy: 'proxy', paypalPaymentCountry: 'payment_country',
       paypalPaymentProxy: 'payment_proxy', paypalSmsCountry: 'sms_country', paypalSmsProviderIds: 'sms_provider_ids',
-      paypalSmsApiKey: 'sms_api_key', paypalSmsTimeout: 'sms_timeout', paypalPaymentRetries: 'payment_retries',
+      paypalSmsProvider: 'sms_provider', paypalSmsApiKey: 'sms_api_key', paypalSmsTimeout: 'sms_timeout', paypalPaymentRetries: 'payment_retries',
+      paypalVakApiBase: 'vak_api_base', paypalVakCountry: 'vak_country', paypalVakService: 'vak_service', paypalVakOperator: 'vak_operator', paypalVakApiKey: 'vak_api_key',
     };
     const key = mapping[element.id];
     if (key) state.settingsDirty.add(key);
@@ -1407,13 +1460,14 @@
     const refresh = byId('paypalRefresh');
     if (refresh) refresh.addEventListener('click', () => loadPaypalProtocol());
 
-    ['paypalAutoExtract', 'paypalCdkBaseUrl', 'paypalCdkCountry', 'paypalCdkProtocolCountry', 'paypalCdkRetries', 'paypalCdkSmsApiKey', 'paypalDefaultProxy', 'paypalPaymentCountry', 'paypalPaymentProxy', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey', 'paypalSmsTimeout', 'paypalPaymentRetries'].forEach((id) => {
+    ['paypalAutoExtract', 'paypalCdkBaseUrl', 'paypalCdkCountry', 'paypalCdkProtocolCountry', 'paypalCdkRetries', 'paypalCdkSmsApiKey', 'paypalDefaultProxy', 'paypalPaymentCountry', 'paypalPaymentProxy', 'paypalSmsProvider', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey', 'paypalVakApiBase', 'paypalVakCountry', 'paypalVakService', 'paypalVakOperator', 'paypalVakApiKey', 'paypalSmsTimeout', 'paypalPaymentRetries'].forEach((id) => {
       const input = byId(id);
       if (!input) return;
-      input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => {
+       input.addEventListener(input.type === 'checkbox' || input.tagName === 'SELECT' ? 'change' : 'input', () => {
         markSettingDirty(input);
         const settingsStatus = byId('paypalSettingsStatus');
         if (settingsStatus) settingsStatus.textContent = '有未保存的设置。';
+        if (input.id === 'paypalSmsProvider') syncSmsProviderUi(input.value);
       });
     });
     document.querySelectorAll('input[name="paypalRoute"]').forEach((input) => {
@@ -1535,6 +1589,7 @@
         const mapping = {
           cdk_sms_api_key: 'paypalCdkSmsApiKey', proxy: 'paypalDefaultProxy',
           payment_proxy: 'paypalPaymentProxy', sms_api_key: 'paypalSmsApiKey',
+          vak_api_key: 'paypalVakApiKey',
         };
         const key = clearSetting.dataset.paypalClearSetting;
         const input = byId(mapping[key]);

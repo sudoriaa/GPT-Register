@@ -92,6 +92,8 @@ CPA_SAVE_CALLBACK_RECEIPT: bool = True
 # 接码平台（手机短信验证用）
 # SMS_PROVIDER:
 #   "grizzly" = GrizzlySMS，接口说明见 https://api.grizzlysms.com
+#   "smsbower" = SMSBower（sms-activate 兼容接口）
+#   "vak"     = VAK SMS legacy rental API（https://vak-sms.com/api）
 #   "l"       = 本地 L 取号服务，接口说明见 L_API.md
 #   "h"       = 本地 H 取号服务，接口说明见 H_API.md
 # ============================================================
@@ -125,6 +127,31 @@ SMS_POLL_INTERVAL: int = 5
 
 # 接码平台 HTTP 请求超时（秒）
 SMS_REQUEST_TIMEOUT: int = 30
+
+
+# ============================================================
+# VAK SMS（SMS_PROVIDER="vak" 时使用）
+#
+# partner/agent 文档主要描述号码供应方 webhook；主动租号使用同一站点
+# 保留的 /api/getNumber、/api/getSmsCode、/api/setStatus 接口。
+# ============================================================
+
+# VAK 站点根地址，也可填写已包含 /api 的地址。
+VAK_SMS_API_BASE: str = "https://vak-sms.com"
+
+# VAK API Key（只从 .env 读取，不写回 config/*.py）
+VAK_SMS_API_KEY: str = env_str("VAK_SMS_API_KEY", "")
+
+# VAK 当前 OpenAI 服务码为 dr；服务码与国家代码均按 VAK 后台填写；国家可用 us/gb 等 ISO 简码，
+# 也兼容平台提供的数字/自定义代码。
+VAK_SMS_SERVICE: str = "dr"
+VAK_SMS_COUNTRY: str = "us"
+VAK_SMS_OPERATOR: str = ""
+VAK_SMS_SOFT_ID: str = ""
+# VAK: bad=号码已使用/标记为坏号；end=取消并释放未使用号码。
+VAK_SMS_SUCCESS_STATUS: str = "bad"
+VAK_SMS_CANCEL_STATUS: str = "end"
+VAK_SMS_POLL_INTERVAL: int = 5
 
 
 # ============================================================
@@ -180,4 +207,4 @@ L_ADMIN_AUTH_CODE: str = env_str("L_ADMIN_AUTH_CODE", "")
 L_PHONE_PREFIX: str = ""
 
 # ---- .env overrides for WebUI editable fields ----
-apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_API_KEY': 'str', 'SMSBOWER_API_BASE': 'str', 'SMSBOWER_API_KEY': 'str', 'SMSBOWER_SERVICE': 'str', 'SMS_PROVIDER_IDS': 'str', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})
+apply_env_overrides(globals(), {'ENABLE_CODEX_AUTO': 'bool', 'CODEX_OAUTH_DRIVER': 'str', 'CODEX_AUTH_URL_SOURCE': 'str', 'CPA_MANAGEMENT_URL': 'str', 'CPA_MANAGEMENT_KEY': 'str', 'CPA_REQUEST_TIMEOUT': 'int', 'CPA_CALLBACK_SUBMIT_RETRIES': 'int', 'CPA_CALLBACK_SUBMIT_RETRY_DELAY': 'int', 'CPA_SAVE_CALLBACK_RECEIPT': 'bool', 'SMS_PROVIDER': 'str', 'SMS_COUNTRY': 'str', 'SMS_SERVICE': 'str', 'SMS_MAX_RETRIES': 'int', 'SMS_CODE_WAIT': 'int', 'SMS_POLL_INTERVAL': 'int', 'SMS_REQUEST_TIMEOUT': 'int', 'SMS_API_KEY': 'str', 'SMSBOWER_API_BASE': 'str', 'SMSBOWER_API_KEY': 'str', 'SMSBOWER_SERVICE': 'str', 'SMS_PROVIDER_IDS': 'str', 'VAK_SMS_API_BASE': 'str', 'VAK_SMS_API_KEY': 'str', 'VAK_SMS_SERVICE': 'str', 'VAK_SMS_COUNTRY': 'str', 'VAK_SMS_OPERATOR': 'str', 'VAK_SMS_SOFT_ID': 'str', 'VAK_SMS_SUCCESS_STATUS': 'str', 'VAK_SMS_CANCEL_STATUS': 'str', 'VAK_SMS_POLL_INTERVAL': 'int', 'H_API_BASE': 'str', 'H_ADMIN_AUTH_CODE': 'str', 'H_PHONE_PREFIX': 'str', 'H_PHONE_ACQUIRE_MODE': 'str', 'L_API_BASE': 'str', 'L_ADMIN_AUTH_CODE': 'str', 'L_PHONE_PREFIX': 'str'})

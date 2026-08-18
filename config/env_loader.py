@@ -40,9 +40,11 @@ SECRET_ENV_KEYS: dict[str, str] = {
     "EXTRACT_LINK_PROXY": "PayPal 提链默认代理（可能包含认证信息）",
     "PAYPAL_PAYMENT_PROXY": "PayPal 协议支付默认代理（可能包含认证信息）",
     "PAYPAL_PAYMENT_SMS_API_KEY": "PayPal 协议支付 SMSBower API Key",
+    "PAYPAL_PAYMENT_VAK_API_KEY": "PayPal 协议支付 VAK API Key",
     "SUB2API_API_KEY": "sub2api 管理接口 API Key",
     "SUB2API_API_TOKEN": "sub2api 管理接口鉴权 Token（旧配置名，兼容）",
     "SMS_API_KEY": "接码平台 API Key（如 GrizzlySMS）",
+    "VAK_SMS_API_KEY": "VAK SMS API Key",
     "L_ADMIN_AUTH_CODE": "本地 L 接码服务 ADMIN_AUTH_CODE",
     "H_ADMIN_AUTH_CODE": "本地 H 接码服务 ADMIN_AUTH_CODE",
 }

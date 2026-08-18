@@ -7138,10 +7138,12 @@ function emailConfigSectionForKey(key) {
 }
 
 function smsConfigSectionForKey(key) {
-  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_RETRIES','SMS_CODE_WAIT'].includes(key)) {
+  if (['SMS_PROVIDER','SMS_COUNTRY','SMS_SERVICE','SMS_MAX_RETRIES','SMS_CODE_WAIT','SMS_POLL_INTERVAL','SMS_REQUEST_TIMEOUT'].includes(key)) {
     return ['通用接码', '接码通道选择、国家/服务代码、等待和重试参数；H 通道可复用 SMS_SERVICE/SMS_COUNTRY 作为 projectId/country'];
   }
   if (key === 'SMS_API_KEY') return ['GrizzlySMS', 'GrizzlySMS 平台 API Key 配置'];
+  if (key.startsWith('SMSBOWER_') || key === 'SMS_PROVIDER_IDS') return ['SMSBower', 'SMSBower 平台 API、服务码与渠道配置'];
+  if (key.startsWith('VAK_SMS_')) return ['VAK', 'VAK 用于 Codex 授权/补跑 RT 的取号、国家、服务码与轮询配置'];
   if (key.startsWith('H_')) return ['H 接码', 'H_API.md 本地 H 取号服务配置；项目ID/国家留空时复用通用字段'];
   if (key.startsWith('L_')) return ['L 接码', 'L_API.md 本地 L 取号服务配置'];
   return ['其他接码配置', ''];
@@ -7410,7 +7412,9 @@ function renderConfigPlainFieldV2(f) {
   } else {
     const shown = isPlaceholderEmpty(fv) ? '' : fv;
     const inputType = f.secret ? 'password' : 'text';
-    const ph = f.secret ? '保存在 .env，可留空' : '可留空';
+    const ph = f.secret
+      ? (f.configured ? '已配置，留空保持不变' : '保存在 .env，可留空')
+      : '可留空';
     control = `<input type="${inputType}" data-key="${attrEsc(f.key)}" value="${attrEsc(shown)}" placeholder="${ph}" autocomplete="off" spellcheck="false">`;
   }
   return `

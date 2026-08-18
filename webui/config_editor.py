@@ -722,6 +722,10 @@ EDITABLE_FIELDS = [
         "label": "协议支付默认代理", "help": "可选；本次覆盖 > 此处代理 > 账号注册代理", "storage": "env", "secret": True,
     },
     {
+        "key": "PAYPAL_PAYMENT_SMS_PROVIDER", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "协议支付接码平台", "help": "smsbower 或 vak；选择 vak 后使用下方 VAK 参数",
+    },
+    {
         "key": "PAYPAL_PAYMENT_SMS_API_BASE", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
         "label": "SMSBower API地址", "help": "默认 https://smsbower.page/stubs/handler_api.php",
     },
@@ -740,6 +744,26 @@ EDITABLE_FIELDS = [
     {
         "key": "PAYPAL_PAYMENT_SMS_TIMEOUT", "file": "paypal_payment.py", "type": "int", "group": "协议支付",
         "label": "支付接码超时(秒)", "help": "单个号码等待 PayPal 短信验证码的最长时间",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_VAK_API_BASE", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "VAK API地址", "help": "默认 https://vak-sms.com；客户端自动使用 /api 接口",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_VAK_API_KEY", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "VAK API Key", "help": "VAK 后台 API Key，保存到 .env 且页面不回显", "storage": "env", "secret": True,
+    },
+    {
+        "key": "PAYPAL_PAYMENT_VAK_SERVICE", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "VAK 服务码", "help": "按 VAK 服务列表填写；PayPal 服务码为 pp，可自定义",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_VAK_COUNTRY", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "VAK 国家代码", "help": "按 VAK 后台填写，例如 gb/us；与账单国家独立",
+    },
+    {
+        "key": "PAYPAL_PAYMENT_VAK_OPERATOR", "file": "paypal_payment.py", "type": "str", "group": "协议支付",
+        "label": "VAK 运营商", "help": "可留空自动选择；填写时使用 VAK country 对应的 operator 名称",
     },
     {
         "key": "PAYPAL_PAYMENT_MAX_RETRIES", "file": "paypal_payment.py", "type": "int", "group": "协议支付",
@@ -804,7 +828,7 @@ EDITABLE_FIELDS = [
 
     {
         "key": "SMS_PROVIDER", "file": "codex.py", "type": "str", "group": "接码平台",
-        "label": "接码通道", "help": "grizzly / smsbower / l / h；grizzly=GrizzlySMS、smsbower=SMSBower（均 sms-activate 协议）、l/h 为本地取号服务",
+        "label": "接码通道", "help": "grizzly / smsbower / vak / l / h；vak=VAK SMS，l/h 为本地取号服务",
     },
     {
         "key": "SMS_COUNTRY", "file": "codex.py", "type": "str", "group": "接码平台",
@@ -827,6 +851,10 @@ EDITABLE_FIELDS = [
         "label": "查短信间隔(秒)", "help": "轮询接码平台查短信的间隔秒数",
     },
     {
+        "key": "SMS_REQUEST_TIMEOUT", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "接码请求超时(秒)", "help": "调用接码平台 HTTP API 的单次请求超时",
+    },
+    {
         "key": "SMS_API_KEY", "file": "codex.py", "type": "str", "group": "接码平台",
         "label": "GrizzlySMS API密钥", "help": "GrizzlySMS 平台 API Key，保存在 .env（SMS_API_KEY），不写回 config/*.py",
         "storage": "env", "secret": True,
@@ -847,6 +875,30 @@ EDITABLE_FIELDS = [
     {
         "key": "SMS_PROVIDER_IDS", "file": "codex.py", "type": "str", "group": "接码平台",
         "label": "渠道号(providerIds)", "help": "指定渠道号，逗号分隔，如 3170,4120；留空则平台自动选渠道。可用 getPricesV3 按国家+服务查询各渠道 provider_id",
+    },
+    {
+        "key": "VAK_SMS_API_BASE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "VAK API地址", "help": "默认 https://vak-sms.com；客户端自动使用 /api 接口",
+    },
+    {
+        "key": "VAK_SMS_API_KEY", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "VAK API Key", "help": "VAK 后台 API Key，保存到 .env 且页面不回显", "storage": "env", "secret": True,
+    },
+    {
+        "key": "VAK_SMS_SERVICE", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "VAK 服务码", "help": "Codex 手机验证对应的 VAK 服务码；当前 OpenAI 常用 dr，可自定义",
+    },
+    {
+        "key": "VAK_SMS_COUNTRY", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "VAK 国家代码", "help": "支持 us/gb 等 VAK 国家代码，可自定义",
+    },
+    {
+        "key": "VAK_SMS_OPERATOR", "file": "codex.py", "type": "str", "group": "接码平台",
+        "label": "VAK 运营商", "help": "可留空自动选择；填写 VAK country 对应的 operator 名称",
+    },
+    {
+        "key": "VAK_SMS_POLL_INTERVAL", "file": "codex.py", "type": "int", "group": "接码平台",
+        "label": "VAK 查码间隔(秒)", "help": "Codex 手机验证轮询 VAK getSmsCode 的间隔",
     },
     {
         "key": "H_API_BASE", "file": "codex.py", "type": "str", "group": "接码平台",
@@ -1050,7 +1102,15 @@ def get_config() -> list[dict]:
             value = _normalize_config_value(value, field["type"])
         item = dict(field)
         item["storage"] = "env"
-        item["value"] = value
+        if field.get("secret"):
+            # Never echo credentials through the generic configuration API.
+            # The UI only needs to know whether a value exists; a blank save
+            # must preserve the existing secret (explicit clearing is handled
+            # by the dedicated clear actions or the ``__CLEAR__`` sentinel).
+            item["configured"] = bool(str(value or "").strip())
+            item["value"] = ""
+        else:
+            item["value"] = value
         out.append(item)
     return out
 
@@ -1250,6 +1310,15 @@ def update_config(updates: dict) -> dict:
         if field is None:
             ignored.append(key)
             continue
+        if value == "__CLEAR__":
+            value = ""
+        elif field.get("secret"):
+            if value is None or str(value).strip() == "":
+                # Masked fields are submitted as blank when the user did not
+                # edit them; preserve the existing credential instead of
+                # accidentally erasing it.
+                ignored.append(key)
+                continue
         env_updates[key] = _format_env_value(value, field["type"])
         updated.append(key)
 

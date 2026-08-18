@@ -1418,6 +1418,7 @@ def _do_phone_verification_if_present(driver) -> None:
         last_err = None
         for attempt in range(1, max_retries + 1):
             activation_id = None
+            otp_received = False
             try:
                 activation_id, phone = sms_provider.acquire_number(http)
                 logger.info("[Codex][Browser] 手机验证尝试 %s/%s，provider=%s，号码=+%s", attempt, max_retries, provider, phone)
@@ -1449,6 +1450,7 @@ def _do_phone_verification_if_present(driver) -> None:
                     activation_id, sms_provider._cfg.SMS_CODE_WAIT, sms_provider._cfg.SMS_POLL_INTERVAL
                 )
                 sms_code = sms_provider.wait_for_sms_code(activation_id, http)
+                otp_received = True
                 logger.info("[Codex][Browser] 手机 OTP 收到：%s", sms_code)
                 _type_otp(driver, sms_code)
                 logger.info("[Codex][Browser] 已填写手机 OTP")
@@ -1458,6 +1460,8 @@ def _do_phone_verification_if_present(driver) -> None:
                 logger.info("[Codex][Browser] 已提交手机 OTP，等待验证结果")
                 otp_outcome = _wait_after_phone_otp_submit(driver, timeout=25)
                 logger.info("[Codex][Browser] 手机 OTP 提交后状态：%s", otp_outcome)
+                if otp_outcome not in ("accepted", "callback"):
+                    raise RuntimeError(f"手机验证码未通过：{otp_outcome}")
                 sms_provider.complete(activation_id, http)
                 return
             except Exception as exc:
@@ -1465,9 +1469,11 @@ def _do_phone_verification_if_present(driver) -> None:
                 logger.warning("[Codex][Browser] 手机验证尝试失败，换号：%s", str(exc)[:240])
                 if activation_id:
                     try:
-                        sms_provider.cancel(activation_id, http)
+                        sms_provider.cancel(activation_id, http, bad=otp_received)
                     except Exception:
                         pass
+                if sms_provider.is_fatal_error(exc):
+                    raise
                 if "invalid_auth_step" in str(exc):
                     raise RuntimeError(
                         "手机号流程进入 invalid_auth_step，说明授权状态还未从 email-verification 正常跳转或已失效；"

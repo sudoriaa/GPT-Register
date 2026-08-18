@@ -142,7 +142,9 @@ def test_payment_enqueue_accepts_website_auto_proxy_and_keeps_source_task():
     slots.acquire.return_value = True
     client = MagicMock()
 
-    with patch.object(backend.db, "get_account", return_value=account), \
+    with patch.object(backend, "enabled", return_value=True), \
+         patch.object(extract_link_service, "backend_name", return_value="cdk_web"), \
+         patch.object(backend.db, "get_account", return_value=account), \
          patch.object(backend.db, "account_extract_link_is_fresh", return_value=True), \
          patch.object(backend, "_new_client", return_value=client), \
          patch.object(backend, "_run_payment", return_value={"ok": True}) as run_payment, \

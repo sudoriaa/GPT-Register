@@ -2022,6 +2022,12 @@ def create_app(auth_code: str | None = None) -> Flask:
             "sms_provider_ids": "PAYPAL_PAYMENT_SMS_PROVIDER_IDS",
             "sms_api_base": "PAYPAL_PAYMENT_SMS_API_BASE",
             "sms_api_key": "PAYPAL_PAYMENT_SMS_API_KEY",
+            "sms_provider": "PAYPAL_PAYMENT_SMS_PROVIDER",
+            "vak_api_base": "PAYPAL_PAYMENT_VAK_API_BASE",
+            "vak_api_key": "PAYPAL_PAYMENT_VAK_API_KEY",
+            "vak_service": "PAYPAL_PAYMENT_VAK_SERVICE",
+            "vak_country": "PAYPAL_PAYMENT_VAK_COUNTRY",
+            "vak_operator": "PAYPAL_PAYMENT_VAK_OPERATOR",
             "cdk_web_base_url": "CDK_WEB_BASE_URL",
             "cdk_workbench_password": "CDK_WEB_WORKBENCH_PASSWORD",
             "cdk_country": "CDK_WEB_COUNTRY",
@@ -2040,6 +2046,33 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not isinstance(value, str) or len(value) > 4000:
                 return jsonify({"ok": False, "error": f"{source_key} 必须是长度不超过 4000 的字符串"}), 400
             updates[target_key] = value.strip()
+        clear_setting = str(data.get("clear_setting") or data.get("clearSetting") or "").strip().lower()
+        if clear_setting:
+            clear_fields = {
+                "cdk_sms_api_key": "CDK_WEB_SMS_API_KEY",
+                "proxy": "EXTRACT_LINK_PROXY",
+                "payment_proxy": "PAYPAL_PAYMENT_PROXY",
+                "sms_api_key": "PAYPAL_PAYMENT_SMS_API_KEY",
+                "vak_api_key": "PAYPAL_PAYMENT_VAK_API_KEY",
+            }
+            target_key = clear_fields.get(clear_setting)
+            if not target_key:
+                return jsonify({"ok": False, "error": "clear_setting 参数无效"}), 400
+            updates[target_key] = "__CLEAR__"
+        if "sms_provider" in data:
+            provider = str(data.get("sms_provider") or "").strip().lower()
+            if provider in {"vaksms", "vak_sms", "vak-sms", "vakapi", "vak_api"}:
+                provider = "vak"
+            if provider not in {"smsbower", "vak"}:
+                return jsonify({"ok": False, "error": "sms_provider 仅支持 smsbower / vak"}), 400
+            updates["PAYPAL_PAYMENT_SMS_PROVIDER"] = provider
+        for source_key in ("vak_country",):
+            if source_key not in data:
+                continue
+            candidate = str(data.get(source_key) or "").strip()
+            if not candidate or len(candidate) > 64 or not re.fullmatch(r"[A-Za-z0-9_-]+", candidate):
+                return jsonify({"ok": False, "error": f"{source_key} 必须是 VAK 支持的国家代码"}), 400
+            updates["PAYPAL_PAYMENT_VAK_COUNTRY"] = candidate.lower()
         if "payment_country" in data or "country" in data:
             # The protocol project consumes an ISO-3166 alpha-2 billing
             # country.  Validate before writing so a malformed value cannot
@@ -3482,7 +3515,7 @@ def create_app(auth_code: str | None = None) -> Flask:
 
     @app.get("/api/sms/countries")
     def api_sms_countries():
-        """拉接码平台（GrizzlySMS / SMSBower）国家列表，供配置页选择国家。"""
+        """拉接码平台（GrizzlySMS / SMSBower / VAK）国家列表，供配置页选择国家。"""
         from core import sms_provider
         countries = sms_provider.list_countries()
         return jsonify({"ok": True, "countries": countries, "count": len(countries)})

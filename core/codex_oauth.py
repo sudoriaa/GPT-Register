@@ -4,8 +4,8 @@
 
 旧方案"复用注册的已登录 session"会撞 /choose-an-account 卡死（React SPA 解析不出
 可提交字段）。新方案改为用**全新干净 session**从头登录，走 OpenAI 标准风控路径，
-手机号验证靠接码平台自动收码，当前通过 core.sms_provider 支持 GrizzlySMS 和 L_API.md
-定义的本地 L 取号服务。
+手机号验证靠接码平台自动收码，当前通过 core.sms_provider 支持 GrizzlySMS、SMSBower、VAK
+和 L_API.md 定义的本地 L 取号服务。
 
 完整接口链（2026-06-15 浏览器抓包确认，均 POST auth.openai.com，json）：
     1. 提交邮箱   /api/accounts/authorize/continue  {"username":{"kind":"email","value":邮箱}}  带 sentinel(authorize_continue)
@@ -845,7 +845,10 @@ def _submit_email_otp(session: BrowserSession, code: str) -> None:
 
 def _sms_provider_name() -> str:
     """当前接码通道名，仅用于 Codex 流程日志。"""
-    return str(getattr(_cfg, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower()
+    value = str(getattr(_cfg, "SMS_PROVIDER", "grizzly") or "grizzly").strip().lower()
+    if value in {"vaksms", "vak_sms", "vak-sms", "vakapi", "vak_api"}:
+        return "vak"
+    return value
 
 
 def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "[Codex]") -> None:
@@ -857,6 +860,24 @@ def _sleep_before_phone_retry(attempt: int, max_retries: int, *, prefix: str = "
     time.sleep(seconds)
 
 
+def _is_task_stop_exception(exc: BaseException) -> bool:
+    """识别任务停止信号，供手机号清理逻辑保留原始异常。"""
+    # Codex 补跑通过异步注入 ``CodexRetryStopped``，注册任务则使用
+    # ``StopRequested``。这里按类型名判断，避免在 OAuth 模块顶层导入任务服务
+    # 造成循环依赖，也兼容测试/调用方定义的同名停止异常。
+    if type(exc).__name__ in {"CodexRetryStopped", "StopRequested"}:
+        return True
+    text = str(exc or "").strip().lower()
+    return any(token in text for token in (
+        "manual stop",
+        "stop requested",
+        "task stopped",
+        "手动停止",
+        "停止任务",
+        "任务已停止",
+    ))
+
+
 def _do_phone_verification(session: BrowserSession) -> None:
     """
     用接码平台拿号 → add-phone/send 发短信 → 收码 → phone-otp/validate。
@@ -866,6 +887,7 @@ def _do_phone_verification(session: BrowserSession) -> None:
         - SMS_PROVIDER="grizzly"：GrizzlySMS handler_api.php
         - SMS_PROVIDER="smsbower"：SMSBower handler_api.php（sms-activate 协议系，service=dr）
         - SMS_PROVIDER="l"：L_API.md 的 /take-phone 和 /fetch-code JSON 接口
+        - SMS_PROVIDER="vak"：VAK /api/getNumber、/api/getSmsCode 接口
     """
     http = sms_provider._http()
     max_retries = _cfg.SMS_MAX_RETRIES
@@ -874,6 +896,35 @@ def _do_phone_verification(session: BrowserSession) -> None:
         last_err = None
         for attempt in range(1, max_retries + 1):
             activation_id = None
+            otp_received = False
+
+            def _cleanup_current_activation() -> None:
+                """释放本轮号码，且绝不让清理异常覆盖原始流程异常。"""
+                nonlocal activation_id
+                current_id = activation_id
+                if not current_id:
+                    return
+                # 先清空本地句柄，避免停止信号在 cancel() 或重试等待期间到达时
+                # 重复清理同一个激活。
+                activation_id = None
+                try:
+                    if otp_received:
+                        sms_provider.cancel(current_id, http, bad=True)
+                    else:
+                        # 未收到验证码走普通 cancel；不要把 bad=False 作为显式参数，
+                        # 以兼容所有接码适配器的旧签名。
+                        sms_provider.cancel(current_id, http)
+                except BaseException as cleanup_exc:  # noqa: BLE001
+                    if _is_task_stop_exception(cleanup_exc):
+                        # 停止任务优先级最高，保留注入的原始异常实例。
+                        raise
+                    logger.warning(
+                        "[Codex] 清理手机号激活失败（不覆盖原始异常）：id=%s %s: %s",
+                        current_id,
+                        type(cleanup_exc).__name__,
+                        str(cleanup_exc)[:200],
+                    )
+
             try:
                 activation_id, phone = sms_provider.acquire_number(http)
                 logger.info(
@@ -896,7 +947,7 @@ def _do_phone_verification(session: BrowserSession) -> None:
                         f"[Codex] add-phone/send 未成功 reason={send_reason or 'unknown'}, "
                         f"status={send_resp.status_code}: {send_text[:240]}，换号重试"
                     )
-                    sms_provider.cancel(activation_id, http)
+                    _cleanup_current_activation()
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
 
@@ -911,9 +962,13 @@ def _do_phone_verification(session: BrowserSession) -> None:
                         f"wait={_cfg.SMS_CODE_WAIT}s, interval={_cfg.SMS_POLL_INTERVAL}s"
                     )
                     sms_code = sms_provider.wait_for_sms_code(activation_id, http)
-                except sms_provider.SmsCodeTimeout:
+                    otp_received = True
+                except sms_provider.SmsCodeTimeout as timeout_exc:
+                    if _is_task_stop_exception(timeout_exc):
+                        _cleanup_current_activation()
+                        raise
                     logger.warning(f"[Codex] 号码 +{phone} 在 {_cfg.SMS_CODE_WAIT}s 内未收到短信，取消换号")
-                    sms_provider.cancel(activation_id, http)
+                    _cleanup_current_activation()
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
 
@@ -931,32 +986,50 @@ def _do_phone_verification(session: BrowserSession) -> None:
                         f"[Codex] phone-otp/validate 失败 reason={val_reason}, status={val_resp.status_code}: "
                         f"{val_text[:240]}，换号重试"
                     )
-                    sms_provider.cancel(activation_id, http)
+                    _cleanup_current_activation()
                     _sleep_before_phone_retry(attempt, max_retries)
                     continue
 
                 # 成功
                 sms_provider.complete(activation_id, http)
+                activation_id = None
                 logger.info("[Codex] 手机号验证通过")
                 return
 
-            except sms_provider.SmsNoBalanceError:
-                # 余额不足，重试无意义，直接抛
+            except (
+                sms_provider.SmsNoBalanceError,
+                sms_provider.SmsAuthenticationError,
+                sms_provider.SmsConfigurationError,
+            ):
+                # Key、余额或配置错误与号码无关，停止继续耗号。
+                _cleanup_current_activation()
                 raise
             except sms_provider.SmsProviderError as exc:
+                if _is_task_stop_exception(exc):
+                    _cleanup_current_activation()
+                    raise
                 last_err = exc
                 logger.warning(f"[Codex] 接码尝试 {attempt} 失败：{exc}")
-                if activation_id:
-                    sms_provider.cancel(activation_id, http)
+                _cleanup_current_activation()
                 _sleep_before_phone_retry(attempt, max_retries)
                 continue
+            except BaseException as exc:  # noqa: BLE001
+                # OpenAI send/validate 的网络异常，以及其他未分类异常，也必须释放
+                # 已取出的号码。停止信号则原样抛出，交给上层把任务标记 stopped。
+                _cleanup_current_activation()
+                raise
 
         raise RuntimeError(
             f"[Codex] 手机号验证重试 {max_retries} 次仍失败（provider={provider}）"
             + (f"，最后错误：{last_err}" if last_err else "")
         )
     finally:
-        http.close()
+        try:
+            http.close()
+        except BaseException as exc:  # noqa: BLE001
+            if _is_task_stop_exception(exc) or isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            logger.debug("[Codex] 关闭接码 HTTP 会话失败：%s: %s", type(exc).__name__, exc)
 
 
 # ============================================================

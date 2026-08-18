@@ -306,3 +306,49 @@ def test_settings_maps_payment_and_sms_fields_to_env_keys():
         "PAYPAL_PAYMENT_SMS_TIMEOUT": 240,
         "PAYPAL_PAYMENT_MAX_RETRIES": 3,
     }
+
+
+def test_settings_maps_vak_provider_and_custom_country_fields():
+    client = _client()
+    with patch("webui.app.config_editor.update_config", return_value={"updated": []}) as update, \
+         patch("config.reload_all", return_value=[]):
+        response = client.post(
+            "/api/paypal-protocol/settings",
+            json={
+                "sms_provider": "vak-sms",
+                "vak_api_key": "VAK-KEY-FIXTURE",
+                "vak_api_base": "https://vak-sms.com",
+                "vak_country": "de",
+                "vak_service": "paypal",
+                "vak_operator": "telekom",
+            },
+        )
+    assert response.status_code == 200
+    values = update.call_args.args[0]
+    assert values["PAYPAL_PAYMENT_SMS_PROVIDER"] == "vak"
+    assert values["PAYPAL_PAYMENT_VAK_API_KEY"] == "VAK-KEY-FIXTURE"
+    assert values["PAYPAL_PAYMENT_VAK_API_BASE"] == "https://vak-sms.com"
+    assert values["PAYPAL_PAYMENT_VAK_COUNTRY"] == "de"
+    assert values["PAYPAL_PAYMENT_VAK_SERVICE"] == "paypal"
+    assert values["PAYPAL_PAYMENT_VAK_OPERATOR"] == "telekom"
+
+    invalid = client.post("/api/paypal-protocol/settings", json={"sms_provider": "unknown"})
+    assert invalid.status_code == 400
+
+
+def test_settings_explicitly_clears_vak_key_without_treating_blank_as_unchanged():
+    client = _client()
+    with patch("webui.app.config_editor.update_config", return_value={"updated": []}) as update, \
+         patch("config.reload_all", return_value=[]):
+        response = client.post(
+            "/api/paypal-protocol/settings",
+            json={"vak_api_key": "", "clear_setting": "vak_api_key"},
+        )
+    assert response.status_code == 200
+    assert update.call_args.args[0]["PAYPAL_PAYMENT_VAK_API_KEY"] == "__CLEAR__"
+
+    invalid = client.post(
+        "/api/paypal-protocol/settings",
+        json={"clear_setting": "unexpected_secret"},
+    )
+    assert invalid.status_code == 400

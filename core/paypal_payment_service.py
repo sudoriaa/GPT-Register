@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""PayPal BA 协议支付队列与 SMSBower 自动验证码适配。"""
+"""PayPal BA 协议支付队列与可切换 SMSBower/VAK 验证码适配。"""
 from __future__ import annotations
 
 import hashlib
@@ -21,7 +21,21 @@ import httpx
 
 from config import paypal_payment as cfg
 from core import db
-from core.paypal_smsbower import PayPalSmsBowerClient, SmsBowerCodeTimeout, SmsBowerError
+from core.paypal_smsbower import (
+    PayPalSmsBowerClient,
+    SmsBowerAuthenticationError,
+    SmsBowerBalanceError,
+    SmsBowerCodeTimeout,
+    SmsBowerConfigurationError,
+    SmsBowerError,
+)
+from core.vak_sms import (
+    VakSmsAuthenticationError,
+    VakSmsBalanceError,
+    VakSmsClient,
+    VakSmsConfigurationError,
+    VakSmsProtocolError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +110,20 @@ def _country(value: str | None = None) -> str:
 
 
 def _sms_api_key() -> str:
+    provider = str(_runtime_setting("PAYPAL_PAYMENT_SMS_PROVIDER", "smsbower") or "smsbower").strip().lower()
+    if provider in {"vak", "vaksms", "vak_sms", "vak-sms"}:
+        # Keep provider credentials isolated.  A SMSBower key is syntactically
+        # just another opaque string, so using it as a VAK fallback makes the
+        # UI report "configured" and only fails later as BAD_KEY.
+        return str(_runtime_setting("PAYPAL_PAYMENT_VAK_API_KEY", "") or "").strip()
     return str(_runtime_setting("PAYPAL_PAYMENT_SMS_API_KEY", "") or "").strip()
+
+
+def _sms_provider() -> str:
+    value = str(_runtime_setting("PAYPAL_PAYMENT_SMS_PROVIDER", "smsbower") or "smsbower").strip().lower()
+    if value in {"vak", "vaksms", "vak_sms", "vak-sms"}:
+        return "vak"
+    return "smsbower"
 
 
 def public_settings() -> dict:
@@ -109,17 +136,29 @@ def public_settings() -> dict:
         cdk_mode_active = extract_link_service.backend_name() == "cdk_web"
     except Exception:
         cdk_mode_active = False
+    active_sms_provider = _sms_provider()
+    smsbower_key = str(_runtime_setting("PAYPAL_PAYMENT_SMS_API_KEY", "") or "").strip()
+    vak_key = str(_runtime_setting("PAYPAL_PAYMENT_VAK_API_KEY", "") or "").strip()
     return {
         "auto_payment": local_auto,
         "local_auto_payment_configured": configured_auto,
         "local_auto_payment_disabled_by_cdk": bool(cdk_mode_active and configured_auto),
         "payment_country": _country(),
         "payment_proxy_configured": bool(str(_runtime_setting("PAYPAL_PAYMENT_PROXY", "") or "").strip()),
-        "sms_api_key_configured": bool(_sms_api_key()),
+        "sms_provider": active_sms_provider,
+        # Keep the legacy field meaningful for API consumers: it reflects the
+        # credential of the currently selected payment SMS provider.
+        "sms_api_key_configured": bool(vak_key if active_sms_provider == "vak" else smsbower_key),
+        "smsbower_api_key_configured": bool(smsbower_key),
         "sms_country": str(_runtime_setting("PAYPAL_PAYMENT_SMS_COUNTRY", "16") or "16").strip(),
         "sms_provider_ids": str(_runtime_setting("PAYPAL_PAYMENT_SMS_PROVIDER_IDS", "") or "").strip(),
         "sms_service": str(_runtime_setting("PAYPAL_PAYMENT_SMS_SERVICE", "paypal") or "paypal").strip(),
         "sms_timeout": _int_setting("PAYPAL_PAYMENT_SMS_TIMEOUT", 120, 20, 3600),
+        "vak_api_base": str(_runtime_setting("PAYPAL_PAYMENT_VAK_API_BASE", "https://vak-sms.com") or "https://vak-sms.com").strip(),
+        "vak_api_key_configured": bool(vak_key),
+        "vak_service": str(_runtime_setting("PAYPAL_PAYMENT_VAK_SERVICE", "pp") or "pp").strip(),
+        "vak_country": str(_runtime_setting("PAYPAL_PAYMENT_VAK_COUNTRY", "gb") or "gb").strip(),
+        "vak_operator": str(_runtime_setting("PAYPAL_PAYMENT_VAK_OPERATOR", "") or "").strip(),
         "payment_retries": _int_setting("PAYPAL_PAYMENT_MAX_RETRIES", 2, 0, 20),
         "service_base": str(_runtime_setting("PAYPAL_PAYMENT_SERVICE_BASE", "http://127.0.0.1:18097") or "").strip().rstrip("/"),
         "service_autostart": _bool_setting("PAYPAL_PAYMENT_AUTOSTART_SERVICE", True),
@@ -362,7 +401,7 @@ class PaypalProtocolHttpRunner:
                             raise ProtocolPaymentError("PayPal 验证码未通过，协议服务再次请求验证码")
                         code = str(otp_supplier() or "").strip()
                         if not code:
-                            raise SmsBowerCodeTimeout("SMSBower 未返回验证码")
+                            raise SmsBowerCodeTimeout(f"{_sms_provider().upper()} 未返回验证码")
                         otp_response = client.post(base + f"/api/jobs/{job_id}/otp", json={"value": code})
                         if otp_response.status_code not in {200, 201, 202}:
                             try:
@@ -371,7 +410,7 @@ class PaypalProtocolHttpRunner:
                                 otp_payload = {}
                             raise ProtocolPaymentError(str(otp_payload.get("error") or otp_response.text or "提交验证码失败")[:1000])
                         otp_submitted = True
-                        progress("SMSBower 验证码已提交", job_id)
+                        progress(f"{_sms_provider().upper()} 验证码已提交", job_id)
                     elif status == "awaiting_captcha":
                         raise ManualInterventionRequired("PP协议进入人工验证状态，请在失败记录中人工重试/处理")
                     elif status == "completed":
@@ -396,11 +435,24 @@ class PaypalProtocolHttpRunner:
 
 
 def _sms_client():
-    """Create the shared, dependency-injected SMSBower client.
+    """Create the configured payment SMS client.
 
     Keeping this behind a factory lets tests replace it without touching the
     payment worker and keeps registration's global SMS settings isolated.
     """
+    if _sms_provider() == "vak":
+        return VakSmsClient(
+            api_key=_sms_api_key(),
+            base_url=str(_runtime_setting("PAYPAL_PAYMENT_VAK_API_BASE", "https://vak-sms.com") or "https://vak-sms.com"),
+            service=str(_runtime_setting("PAYPAL_PAYMENT_VAK_SERVICE", "pp") or "pp"),
+            country=str(_runtime_setting("PAYPAL_PAYMENT_VAK_COUNTRY", "gb") or "gb"),
+            operator=str(_runtime_setting("PAYPAL_PAYMENT_VAK_OPERATOR", "") or ""),
+            soft_id=str(_runtime_setting("PAYPAL_PAYMENT_VAK_SOFT_ID", "") or ""),
+            request_timeout=float(_int_setting("PAYPAL_PAYMENT_SMS_REQUEST_TIMEOUT", 30, 5, 120)),
+            poll_interval=float(_int_setting("PAYPAL_PAYMENT_SMS_POLL_INTERVAL", 3, 1, 30)),
+            success_status=str(_runtime_setting("PAYPAL_PAYMENT_VAK_SUCCESS_STATUS", "bad") or "bad"),
+            cancel_status=str(_runtime_setting("PAYPAL_PAYMENT_VAK_CANCEL_STATUS", "end") or "end"),
+        )
     return PayPalSmsBowerClient(
         api_key=_sms_api_key(),
         base_url=str(_runtime_setting("PAYPAL_PAYMENT_SMS_API_BASE", "https://smsbower.page/stubs/handler_api.php") or ""),
@@ -418,6 +470,24 @@ def _sms_client():
     )
 
 
+def _nonretryable_sms_error(exc: BaseException) -> bool:
+    """Whether changing the rented number cannot repair this SMS failure."""
+    if isinstance(exc, (
+        SmsBowerAuthenticationError,
+        SmsBowerBalanceError,
+        SmsBowerConfigurationError,
+        VakSmsAuthenticationError,
+        VakSmsBalanceError,
+        VakSmsConfigurationError,
+    )):
+        return True
+    if isinstance(exc, VakSmsProtocolError):
+        return str(getattr(exc, "code", "") or "").upper() in {
+            "BAD_SERVICE", "BAD_COUNTRY", "BAD_OPERATOR", "BAD_DATA",
+        }
+    return False
+
+
 def _safe_result_summary(result: dict) -> dict:
     source = result if isinstance(result, dict) else {}
     allowed = (
@@ -431,6 +501,43 @@ def _safe_result_summary(result: dict) -> dict:
     if fingerprint_source.strip("|"):
         summary["result_fingerprint"] = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:20]
     return summary
+
+
+def _persist_success_result(
+    account_id: int,
+    result: dict,
+    *,
+    ba_token: str = "",
+    phone: str = "",
+    proxy: str = "",
+) -> None:
+    """Best-effort persistence for a terminally successful payment.
+
+    Once the protocol runner has returned success, a local persistence error
+    must not send the worker through its payment retry loop.  Keep the result
+    object successful and attach a redacted persistence diagnostic; a later
+    account refresh/reconciliation can write it again.
+    """
+    try:
+        persisted = db.update_account_paypal_payment(account_id, result)
+        if persisted is False:
+            raise RuntimeError("账号状态写入未确认")
+    except Exception as persist_exc:
+        persist_error = _redact(
+            f"{type(persist_exc).__name__}: {persist_exc}",
+            ba_token,
+            phone,
+            proxy,
+        )
+        result["payment_persistence_pending"] = True
+        result["payment_persistence_error"] = persist_error
+        payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+        result["result"] = {
+            **payload,
+            "payment_persistence_pending": True,
+            "payment_persistence_error": persist_error,
+        }
+        logger.error("[协议支付] 成功结果持久化待处理: %s error=%s", account_id, persist_error)
 
 
 def _run_payment(
@@ -450,12 +557,15 @@ def _run_payment(
         if not db.mark_account_paypal_payment_running(account_id):
             return {"ok": False, "status": "failed", "error": "账号已删除或支付状态已重置"}
         last_error = ""
+        last_attempt = 0
         for attempt in range(1, max_attempts + 1):
-            sms: PayPalSmsBowerClient | None = None
+            last_attempt = attempt
+            sms: PayPalSmsBowerClient | VakSmsClient | None = None
             activation_id = ""
             activation = None
             phone = ""
             protocol_job_id = ""
+            otp_received = False
             try:
                 db.update_account_paypal_payment(account_id, {
                     "ok": False,
@@ -464,14 +574,14 @@ def _run_payment(
                     "max_attempts": max_attempts,
                     "country": country,
                     "proxy_source": proxy_source,
-                    "message": f"第 {attempt}/{max_attempts} 轮：正在从 SMSBower 取号",
+                    "message": f"第 {attempt}/{max_attempts} 轮：正在从 {_sms_provider().upper()} 取号",
                 })
                 sms = _sms_client()
                 activation = sms.acquire()
                 activation_id = str(getattr(activation, "activation_id", "") or "")
                 phone = str(getattr(activation, "phone_number", "") or "")
                 if not activation_id or not phone:
-                    raise SmsBowerError("SMSBower 返回的号码信息不完整")
+                    raise SmsBowerError(f"{_sms_provider().upper()} 返回的号码信息不完整")
                 activation_fingerprint = hashlib.sha256(activation_id.encode("utf-8")).hexdigest()[:16]
                 phone_digits = re.sub(r"\D", "", phone)
                 db.update_account_paypal_payment(account_id, {
@@ -480,10 +590,15 @@ def _run_payment(
                     "attempt": attempt,
                     "max_attempts": max_attempts,
                     "country": country,
-                    "phone_country": str(_runtime_setting("PAYPAL_PAYMENT_SMS_COUNTRY", "") or ""),
+                    "phone_country": str(
+                        _runtime_setting(
+                            "PAYPAL_PAYMENT_VAK_COUNTRY" if _sms_provider() == "vak" else "PAYPAL_PAYMENT_SMS_COUNTRY",
+                            "" if _sms_provider() == "vak" else "16",
+                        ) or ""
+                    ).strip(),
                     "phone_last4": phone_digits[-4:],
                     "activation_fingerprint": activation_fingerprint,
-                    "message": f"第 {attempt}/{max_attempts} 轮：号码已取得，正在启动 PP协议",
+                    "message": f"第 {attempt}/{max_attempts} 轮：号码已取得，正在启动 PP协议（{_sms_provider().upper()}）",
                 })
 
                 def progress(message: str, job_id: str = "") -> None:
@@ -499,23 +614,36 @@ def _run_payment(
                         "message": f"第 {attempt}/{max_attempts} 轮：{message}",
                     })
 
+                def supply_otp() -> str:
+                    nonlocal otp_received
+                    code = str(
+                        sms.get_code(
+                            activation,
+                            timeout=_int_setting("PAYPAL_PAYMENT_SMS_TIMEOUT", 120, 20, 3600),
+                        )
+                        or ""
+                    ).strip()
+                    if code:
+                        otp_received = True
+                    return code
+
                 runner = PaypalProtocolHttpRunner()
                 outcome = runner.run(
                     ba_token=ba_token,
                     phone=phone,
                     country=country,
                     proxy=proxy,
-                    otp_supplier=lambda: sms.get_code(
-                        activation,
-                        timeout=_int_setting("PAYPAL_PAYMENT_SMS_TIMEOUT", 120, 20, 3600),
-                    ),
+                    otp_supplier=supply_otp,
                     progress=progress,
                 )
                 protocol_job_id = str(outcome.get("protocol_job_id") or protocol_job_id)
                 raw_result = outcome.get("result") if isinstance(outcome.get("result"), dict) else {}
                 safe_result = _safe_result_summary(raw_result)
-                if sms:
-                    sms.complete(activation)
+                # The protocol runner has already reported a completed payment
+                # at this point.  Persist that terminal result before doing any
+                # best-effort SMS activation cleanup.  A cleanup failure must
+                # never fall through to the retry handler: retrying here could
+                # charge the same BA token a second time.
                 final = {
                     "ok": True,
                     "status": "success",
@@ -530,8 +658,66 @@ def _run_payment(
                     "result": safe_result,
                     "message": "协议支付成功",
                     "checked_at": datetime.now().isoformat(timespec="seconds"),
+                    "sms_cleanup_pending": False,
                 }
-                db.update_account_paypal_payment(account_id, final)
+                _persist_success_result(
+                    account_id,
+                    final,
+                    ba_token=ba_token,
+                    phone=phone,
+                    proxy=proxy,
+                )
+
+                if sms:
+                    try:
+                        # Some PayPal agreements complete without ever asking
+                        # for a phone OTP.  In that path the rented number was
+                        # never consumed and should be released, not marked as
+                        # used/bad.  Once a code has been received, complete()
+                        # performs the provider-specific used-number cleanup.
+                        cleanup_ok = (
+                            sms.complete(activation)
+                            if otp_received
+                            else sms.cancel(activation)
+                        )
+                        if cleanup_ok is False:
+                            raise RuntimeError("短信号码清理未确认")
+                    except Exception as cleanup_exc:
+                        cleanup_error = _redact(
+                            f"{type(cleanup_exc).__name__}: {cleanup_exc}",
+                            ba_token,
+                            phone,
+                            proxy,
+                        )
+                        # Keep the payment terminally successful while exposing
+                        # enough information for a later cleanup/reconciliation
+                        # pass.  Store the flags both at the top level (for
+                        # callers/tests) and in the redacted result payload (the
+                        # database persists that payload independently).
+                        final["sms_cleanup_pending"] = True
+                        final["sms_cleanup_error"] = cleanup_error
+                        final["cleanup_error"] = cleanup_error
+                        final["message"] = "协议支付成功，短信号码清理待处理"
+                        final["result"] = {
+                            **safe_result,
+                            "sms_cleanup_pending": True,
+                            "sms_cleanup_error": cleanup_error,
+                            "cleanup_error": cleanup_error,
+                        }
+                        _persist_success_result(
+                            account_id,
+                            final,
+                            ba_token=ba_token,
+                            phone=phone,
+                            proxy=proxy,
+                        )
+                        logger.warning(
+                            "[协议支付] 支付已成功但短信号码清理待处理: %s attempt=%s/%s error=%s",
+                            email,
+                            attempt,
+                            max_attempts,
+                            cleanup_error,
+                        )
                 logger.info("[协议支付] 成功: %s attempt=%s/%s country=%s", email, attempt, max_attempts, country)
                 return final
             except PaymentConfigurationError:
@@ -540,13 +726,19 @@ def _run_payment(
                 last_error = _redact(f"{type(exc).__name__}: {exc}", ba_token, phone, proxy)
                 if sms and activation_id:
                     try:
-                        sms.cancel(activation)
+                        try:
+                            sms.cancel(activation, bad=otp_received)
+                        except TypeError:
+                            # SMSBower's legacy client has no ``bad`` keyword;
+                            # retain its normal cancellation path.
+                            sms.cancel(activation)
                     except Exception:
                         pass
                 logger.warning("[协议支付] 第 %s/%s 轮失败: %s: %s", attempt, max_attempts, email, last_error)
+                nonretryable = _nonretryable_sms_error(exc)
                 db.update_account_paypal_payment(account_id, {
                     "ok": False,
-                    "status": "running" if attempt < max_attempts else "failed",
+                    "status": "running" if attempt < max_attempts and not nonretryable else "failed",
                     "attempt": attempt,
                     "max_attempts": max_attempts,
                     "protocol_job_id": protocol_job_id or None,
@@ -555,10 +747,12 @@ def _run_payment(
                     "error": last_error,
                     "message": (
                         f"第 {attempt}/{max_attempts} 轮失败，正在更换号码重试：{last_error}"
-                        if attempt < max_attempts else last_error
+                        if attempt < max_attempts and not nonretryable else last_error
                     ),
                 })
-                if attempt < max_attempts:
+                if nonretryable:
+                    break
+                if attempt < max_attempts and not nonretryable:
                     continue
             finally:
                 if sms:
@@ -566,7 +760,7 @@ def _run_payment(
         final = {
             "ok": False,
             "status": "failed",
-            "attempt": max_attempts,
+            "attempt": last_attempt or max_attempts,
             "max_attempts": max_attempts,
             "country": country,
             "proxy_source": proxy_source,
@@ -644,7 +838,7 @@ def enqueue_account_payment(
     if not ba_token:
         return {"accepted": False, "busy": False, "error": "提链结果不含有效 BA Token"}
     if not _sms_api_key():
-        return {"accepted": False, "busy": False, "error": "请先配置协议支付 SMSBower API Key"}
+        return {"accepted": False, "busy": False, "error": f"请先配置协议支付 {_sms_provider().upper()} API Key"}
     payment_country = _country(country)
     selected_proxy, proxy_source = resolve_payment_proxy(int(account_id), proxy)
     if not selected_proxy:
