@@ -1911,7 +1911,7 @@ def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
             row["extract_link_cdk_remaining"] = result.get("cdk_remaining")
         if result.get("proxy_source") is not None:
             source = str(result.get("proxy_source") or "none").strip().lower()
-            row["extract_link_proxy_source"] = source if source in {"custom", "global", "registration", "none"} else "none"
+            row["extract_link_proxy_source"] = source if source in {"custom", "global", "registration", "cdk_web", "none"} else "none"
         payload = result.get("result") if isinstance(result.get("result"), dict) else {}
         if payload:
             row["extract_link_long_url"] = payload.get("long_url")
@@ -1984,7 +1984,7 @@ def claim_account_paypal_payment(
         row["paypal_payment_trigger"] = str(trigger or "manual")[:80]
         row["paypal_payment_country"] = str(country or "").strip().upper()[:2] or None
         source = str(proxy_source or "none").strip().lower()
-        row["paypal_payment_proxy_source"] = source if source in {"custom", "global", "registration", "none"} else "none"
+        row["paypal_payment_proxy_source"] = source if source in {"custom", "global", "registration", "cdk_web", "none"} else "none"
         row["paypal_payment_queued_at"] = now
         row["paypal_payment_started_at"] = None
         row["paypal_payment_completed_at"] = None

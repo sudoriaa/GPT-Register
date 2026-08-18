@@ -116,11 +116,15 @@ def public_settings() -> dict:
     """返回前端可展示的提链设置，绝不返回代理认证或 CDK。"""
     mode = mode_state()
     backend = str(mode["backend"])
-    proxy_setting_name = "CDK_WEB_PROXY" if backend == "cdk_web" else "EXTRACT_LINK_PROXY"
     result = {
         **mode,
         "auto_extract": auto_extract_enabled(),
-        "custom_proxy_configured": bool(str(_runtime_setting(proxy_setting_name, "") or "").strip()),
+        # The CDK workbench owns the task proxy and the local client connects
+        # to the workbench directly.  Do not let a stale legacy CDK_WEB_PROXY
+        # value make the UI or callers think a local proxy participates.
+        "custom_proxy_configured": False if backend == "cdk_web" else bool(
+            str(_runtime_setting("EXTRACT_LINK_PROXY", "") or "").strip()
+        ),
         "country": str(_runtime_setting("EXTRACT_LINK_COUNTRY", "GB") or "GB").strip().upper(),
         "payment_method": str(_runtime_setting("EXTRACT_LINK_PAYMENT_METHOD", "paypal") or "paypal").strip().lower(),
         "expiry_minutes": _int_setting("EXTRACT_LINK_EXPIRY_MINUTES", 60, 1, 24 * 60),
@@ -204,12 +208,15 @@ def _account_proxy(account_id: int) -> str:
 
 def resolve_extract_proxy(account_id: int, override: str | None = None) -> tuple[str, str]:
     """Resolve proxy precedence: request override > global > registration."""
+    if backend_name() == "cdk_web":
+        # Kept as a public helper for compatibility, but CDK mode never reads
+        # request/global/registration proxies.  The website allocates its own.
+        return "", "cdk_web"
     raw_override = str(override or "").strip()
     override_value = _normalize_proxy(raw_override)
     if raw_override and not override_value:
         raise ValueError("本次提链代理格式无效")
-    global_name = "CDK_WEB_PROXY" if backend_name() == "cdk_web" else "EXTRACT_LINK_PROXY"
-    raw_global = str(_runtime_setting(global_name, "") or "").strip()
+    raw_global = str(_runtime_setting("EXTRACT_LINK_PROXY", "") or "").strip()
     global_value = _normalize_proxy(raw_global)
     if raw_global and not global_value:
         raise ValueError("全局提链代理格式无效")

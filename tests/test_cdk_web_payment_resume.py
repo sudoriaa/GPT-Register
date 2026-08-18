@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from core import cdk_web_backend as backend
+from core import extract_link_service
 from core import db
 
 
@@ -58,6 +60,134 @@ class _PaymentClient:
         self.closed = True
 
 
+class _ExtractClient:
+    def __init__(self):
+        self.visitor_id = "visitor-extract"
+        self.task_kwargs = None
+        self.closed = False
+
+    def activate_lease(self, _pool, _lease):
+        return SimpleNamespace(valid=True, remaining_uses=2)
+
+    def create_task(self, _access_token, **kwargs):
+        self.task_kwargs = kwargs
+        return {"task_id": "extract-auto-proxy", "status": "queued"}
+
+    def poll_task(self, task_id, **_kwargs):
+        return {
+            "task_id": task_id,
+            "status": "succeeded",
+            "result": {
+                "provider_url": "https://paypal.test/agreements/approve?ba_token=BA-auto-proxy",
+            },
+        }
+
+    def session_state(self):
+        return {"visitor_id": self.visitor_id, "cookies": {"opl_visitor": self.visitor_id}}
+
+    def close(self):
+        self.closed = True
+
+
+def test_shared_proxy_resolver_ignores_every_local_source_in_cdk_mode():
+    with patch.object(extract_link_service, "backend_name", return_value="cdk_web"), \
+         patch.object(extract_link_service, "_runtime_setting") as runtime_setting, \
+         patch.object(extract_link_service.db, "get_account") as get_account:
+        value, source = extract_link_service.resolve_extract_proxy(
+            7,
+            "socks5://request-user:secret@request-proxy.example:1080",
+        )
+
+    assert (value, source) == ("", "cdk_web")
+    runtime_setting.assert_not_called()
+    get_account.assert_not_called()
+
+
+def test_extract_enqueue_accepts_website_auto_proxy_without_local_or_registration_proxy():
+    pool = MagicMock()
+    pool.available_count.return_value = 1
+    executor = MagicMock()
+    slots = MagicMock()
+    slots.acquire.return_value = True
+
+    with patch.object(backend, "enabled", return_value=True), \
+         patch.object(backend.cdk_pool, "get_pool", return_value=pool), \
+         patch.object(backend.db, "claim_account_extract", return_value=True), \
+         patch.object(backend, "_EXECUTOR", executor), \
+         patch.object(backend, "_QUEUE_SLOTS", slots):
+        queued = backend.enqueue_extract(
+            account_id=21,
+            email="auto-proxy@example.com",
+            access_token="AT-FIXTURE",
+            trigger="test",
+        )
+
+    assert queued["accepted"] is True
+    assert queued["proxy_source"] == "cdk_web"
+    worker_kwargs = executor.submit.call_args.kwargs
+    assert worker_kwargs["proxy"] == ""
+    assert worker_kwargs["proxy_source"] == "cdk_web"
+
+
+def test_payment_enqueue_accepts_website_auto_proxy_and_keeps_source_task():
+    account = {
+        "id": 22,
+        "extract_link_backend": "cdk_web",
+        "extract_link_job_id": "source-task-22",
+        "extract_link_cdk_session_json": json.dumps({"visitor_id": "visitor-22"}),
+    }
+    executor = MagicMock()
+    executor.submit.side_effect = lambda worker: worker()
+    slots = MagicMock()
+    slots.acquire.return_value = True
+    client = MagicMock()
+
+    with patch.object(backend.db, "get_account", return_value=account), \
+         patch.object(backend.db, "account_extract_link_is_fresh", return_value=True), \
+         patch.object(backend, "_new_client", return_value=client), \
+         patch.object(backend, "_run_payment", return_value={"ok": True}) as run_payment, \
+         patch.object(backend, "_EXECUTOR", executor), \
+         patch.object(backend, "_QUEUE_SLOTS", slots):
+        queued = backend.enqueue_payment(account_id=22, trigger="test")
+
+    assert queued["accepted"] is True
+    assert queued["proxy_source"] == "cdk_web"
+    run_kwargs = run_payment.call_args.kwargs
+    assert run_kwargs["source_task_id"] == "source-task-22"
+    assert run_kwargs["proxy"] == ""
+    assert run_kwargs["proxy_source"] == "cdk_web"
+
+
+def test_run_extract_ignores_supplied_local_proxy_in_task_payload():
+    pool = MagicMock()
+    pool.lease.return_value = {"id": "lease-1", "code": "CDK-FIXTURE"}
+    client = _ExtractClient()
+    slots = MagicMock()
+
+    with patch.object(backend.cdk_pool, "get_pool", return_value=pool), \
+         patch.object(backend, "_new_client", return_value=client), \
+         patch.object(backend, "_int", side_effect=_fast_int), \
+         patch.object(backend, "_bool", return_value=False), \
+         patch.object(backend.db, "mark_account_extract_running", return_value=True), \
+         patch.object(backend.db, "update_account_extract", return_value=True), \
+         patch.object(backend, "_QUEUE_SLOTS", slots):
+        result = backend.run_extract(
+            account_id=23,
+            email="auto-proxy@example.com",
+            access_token="AT-FIXTURE",
+            trigger="test",
+            proxy="socks5://registration-user:secret@proxy.test:1080",
+            proxy_source="registration",
+        )
+
+    assert result["status"] == "success"
+    assert result["proxy_source"] == "cdk_web"
+    assert client.task_kwargs["checkout_proxy"] == ""
+    assert client.task_kwargs["update_proxy"] == ""
+    assert "checkout_proxy_rotation" not in client.task_kwargs
+    assert client.closed is True
+
+
 def test_awaiting_otp_keeps_remote_task_alive_and_marks_manual_state():
     client = _PaymentClient([{"task_id": "payment-fixture", "status": "awaiting_otp"}])
     updates = []
@@ -76,6 +206,11 @@ def test_awaiting_otp_keeps_remote_task_alive_and_marks_manual_state():
 
     assert result["status"] == "failed"
     assert result["payment_action"] == "awaiting_otp"
+    assert result["proxy_source"] == "cdk_web"
+    create_call = next(call for call in client.calls if call[0] == "create")
+    assert create_call[1] == "extract-fixture"
+    assert create_call[2]["checkout_proxy"] == ""
+    assert "checkout_proxy_rotation" not in create_call[2]
     assert not any(call[0] == "cancel" for call in client.calls)
     assert any(item.get("payment_action") == "awaiting_otp" for item in updates)
 

@@ -673,10 +673,6 @@ EDITABLE_FIELDS = [
         "label": "CDK 提链后自动支付", "help": "由同一个 CDK visitor/session 继续执行网页协议支付",
     },
     {
-        "key": "CDK_WEB_PROXY", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
-        "label": "CDK 默认代理", "help": "本次覆盖 > 此处代理 > 注册代理", "storage": "env", "secret": True,
-    },
-    {
         "key": "CDK_WEB_SMS_MODE", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
         "label": "网页接码模式", "help": "默认 server-auto；也可使用外部网页支持的指定接码模式",
     },

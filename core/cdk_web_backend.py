@@ -26,6 +26,8 @@ from core.cdk_web_service import (
 
 logger = logging.getLogger(__name__)
 
+_REMOTE_PROXY_SOURCE = "cdk_web"
+
 
 def _setting(name: str, default=None):
     try:
@@ -91,7 +93,9 @@ def public_settings() -> dict:
         "cdk_web_country": str(_setting("CDK_WEB_COUNTRY", "GB") or "GB").upper(),
         "cdk_web_protocol_country": str(_setting("CDK_WEB_PROTOCOL_COUNTRY", "GB") or "GB").upper(),
         "cdk_web_auto_payment": _bool("CDK_WEB_AUTO_PAYMENT", True),
-        "cdk_web_proxy_configured": bool(str(_setting("CDK_WEB_PROXY", "") or "").strip()),
+        # The workbench owns its checkout/update proxy.  A legacy
+        # CDK_WEB_PROXY value is deliberately ignored by this backend.
+        "cdk_web_proxy_configured": False,
         "cdk_web_sms_mode": str(_setting("CDK_WEB_SMS_MODE", "server-auto") or "server-auto"),
         "cdk_web_sms_provider": str(_setting("CDK_WEB_SMS_PROVIDER", "") or ""),
         "cdk_web_sms_api_key_configured": bool(str(_setting("CDK_WEB_SMS_API_KEY", "") or "").strip()),
@@ -118,20 +122,15 @@ def _new_client(visitor_id: str = "", cookies: dict | None = None) -> CdkWebClie
 
 
 def _proxy(account_id: int, override: str | None = None) -> tuple[str, str]:
-    # Keep format/precedence identical to the existing local extractor.
-    from core.extract_link_service import _account_proxy, _normalize_proxy
-    raw_custom = str(override or "").strip()
-    custom = _normalize_proxy(raw_custom)
-    if raw_custom and not custom:
-        raise ValueError("本次 CDK 代理格式无效")
-    raw_global = str(_setting("CDK_WEB_PROXY", "") or "").strip()
-    global_proxy = _normalize_proxy(raw_global)
-    if raw_global and not global_proxy:
-        raise ValueError("CDK 默认代理格式无效")
-    for source, value in (("custom", custom), ("global", global_proxy), ("registration", _account_proxy(account_id))):
-        if value:
-            return value, source
-    return "", "none"
+    """Return the remote-workbench proxy marker without a local proxy.
+
+    CDK tasks are submitted to the workbench over a direct HTTP connection;
+    the workbench itself selects the proxy used for checkout/update/payment.
+    Request overrides, CDK_WEB_PROXY and the account registration proxy must
+    therefore never leak into a CDK task payload.
+    """
+    del account_id, override
+    return "", _REMOTE_PROXY_SOURCE
 
 
 def _redact(value: object, *secrets: str) -> str:
@@ -186,11 +185,12 @@ def _link_result(raw: dict, remaining: int | None) -> dict:
 
 
 def _payment_payload(proxy: str) -> dict:
+    del proxy
     country = str(_setting("CDK_WEB_PROTOCOL_COUNTRY", "") or _setting("CDK_WEB_COUNTRY", "GB") or "GB").upper()
     sms_key = str(_setting("CDK_WEB_SMS_API_KEY", "") or "")
     provider = str(_setting("CDK_WEB_SMS_PROVIDER", "") or "")
     payload = {
-        "checkout_proxy": proxy,
+        "checkout_proxy": "",
         "sms_mode": str(_setting("CDK_WEB_SMS_MODE", "server-auto") or "server-auto"),
         "sms_provider": provider,
         "sms_api_key": sms_key,
@@ -213,6 +213,7 @@ def _safe_payment_result(payload: dict) -> dict:
 
 
 def _payment_success(account_id: int, task_id: str, snapshot: dict, *, attempt: int, max_attempts: int, country: str, proxy_source: str, message: str) -> dict:
+    proxy_source = _REMOTE_PROXY_SOURCE
     safe = _safe_payment_result(snapshot)
     final = {
         "ok": True, "status": "success", "attempt": attempt,
@@ -259,6 +260,9 @@ def _wait_payment(client: CdkWebClient, task_id: str, account_id: int, attempt: 
 
 
 def _run_payment(*, account_id: int, client: CdkWebClient, source_task_id: str, proxy: str, proxy_source: str, trigger: str) -> dict:
+    # The remote workbench owns the payment proxy, including retries.
+    proxy = ""
+    proxy_source = _REMOTE_PROXY_SOURCE
     country = str(_setting("CDK_WEB_PROTOCOL_COUNTRY", "") or _setting("CDK_WEB_COUNTRY", "GB") or "GB").upper()
     if not db.claim_account_paypal_payment(account_id, trigger=trigger, country=country, proxy_source=proxy_source):
         return {"ok": False, "status": "failed", "error": "该账号正在协议支付中"}
@@ -340,6 +344,9 @@ def _run_payment(*, account_id: int, client: CdkWebClient, source_task_id: str, 
 
 
 def run_extract(*, account_id: int, email: str, access_token: str, trigger: str, proxy: str, proxy_source: str) -> dict:
+    # Ignore every local proxy input even when this worker is called directly.
+    proxy = ""
+    proxy_source = _REMOTE_PROXY_SOURCE
     pool = cdk_pool.get_pool()
     max_attempts = _int("CDK_WEB_MAX_RETRIES", 2, 0, 20) + 1
     last_error = ""
@@ -370,8 +377,8 @@ def run_extract(*, account_id: int, email: str, access_token: str, trigger: str,
                     access_token,
                     country=str(_setting("CDK_WEB_COUNTRY", "GB") or "GB"),
                     payment_method="paypal",
-                    checkout_proxy=proxy,
-                    update_proxy=proxy,
+                    checkout_proxy="",
+                    update_proxy="",
                     apply_checkout_update=True,
                     oaics_only=True,
                     protocol_country=str(_setting("CDK_WEB_PROTOCOL_COUNTRY", "GB") or "GB"),
@@ -487,8 +494,6 @@ def enqueue_extract(*, account_id: int, email: str, access_token: str, trigger: 
     if cdk_pool.get_pool().available_count() <= 0:
         return {"accepted": False, "busy": False, "error": "CDK 池没有可用条目"}
     selected, source = _proxy(int(account_id), proxy)
-    if not selected:
-        return {"accepted": False, "busy": False, "error": "没有可用 CDK 代理：请填写本次/默认代理或保存注册代理"}
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "error": "CDK 网页队列已满"}
     try:
@@ -562,8 +567,6 @@ def enqueue_payment(*, account_id: int, trigger: str = "manual", proxy: str | No
     if not db.account_extract_link_is_fresh(int(account_id)):
         return {"accepted": False, "busy": False, "error": "PayPal 提链已过期，请先重新提链"}
     selected, source = _proxy(int(account_id), proxy)
-    if not selected:
-        return {"accepted": False, "busy": False, "error": "没有可用 CDK 支付代理"}
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "error": "CDK 网页队列已满"}
     visitor, cookies = _session_from_account(account)
@@ -584,6 +587,8 @@ def enqueue_payment(*, account_id: int, trigger: str = "manual", proxy: str | No
 
 def _resume_payment(*, account_id: int, client: CdkWebClient, task_id: str, proxy: str, proxy_source: str) -> dict:
     """Continue polling a remote payment task after manual OTP/CAPTCHA input."""
+    proxy = ""
+    proxy_source = _REMOTE_PROXY_SOURCE
     account = db.get_account(int(account_id)) or {}
     try:
         attempt = max(1, int(account.get("paypal_payment_attempt") or 1))
@@ -649,15 +654,10 @@ def submit_intervention(*, account_id: int, value: str, kind: str = "otp") -> di
     if not task_id:
         raise ValueError("账号没有等待人工处理的协议支付任务")
     visitor, cookies = _session_from_account(account)
-    # The original payment task already carries its checkout proxy on the
-    # workbench.  Manual OTP/CAPTCHA submission only touches that existing
-    # task, so it remains resumable even if a process restart temporarily
-    # leaves no local proxy setting.  Use the saved source for redaction/UI.
-    try:
-        proxy, proxy_source = _proxy(int(account_id), None)
-    except Exception:
-        proxy = ""
-        proxy_source = str(account.get("paypal_payment_proxy_source") or "none").strip().lower() or "none"
+    # Manual submission resumes the same remote task and never resolves a
+    # local/registration proxy.
+    proxy = ""
+    proxy_source = _REMOTE_PROXY_SOURCE
     if not _QUEUE_SLOTS.acquire(blocking=False):
         raise ValueError("CDK 网页队列已满")
     client = None

@@ -2011,7 +2011,6 @@ def create_app(auth_code: str | None = None) -> Flask:
             "sms_api_key": "PAYPAL_PAYMENT_SMS_API_KEY",
             "cdk_web_base_url": "CDK_WEB_BASE_URL",
             "cdk_workbench_password": "CDK_WEB_WORKBENCH_PASSWORD",
-            "cdk_web_proxy": "CDK_WEB_PROXY",
             "cdk_country": "CDK_WEB_COUNTRY",
             "cdk_protocol_country": "CDK_WEB_PROTOCOL_COUNTRY",
             "cdk_sms_mode": "CDK_WEB_SMS_MODE",

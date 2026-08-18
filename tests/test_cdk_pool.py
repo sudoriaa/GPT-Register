@@ -148,7 +148,8 @@ def test_client_bootstraps_visitor_and_runs_task_protocol_flow() -> None:
     task = client.create_task(
         "AT-FIXTURE",
         country="GB",
-        checkout_proxy="socks5://proxy.example:1080",
+        checkout_proxy="",
+        update_proxy="",
         auto_start_protocol=True,
     )
     assert task["task_id"] == "task-1"
@@ -160,6 +161,29 @@ def test_client_bootstraps_visitor_and_runs_task_protocol_flow() -> None:
     assert payment["status"] == "awaiting_otp"
     assert client.submit_otp("task-1", "123456")["status"] == "running"
     assert client.poll_protocol_payment("task-1", timeout=1, interval=0)["status"] == "completed"
+
+    task_call = next(
+        call for call in transport.calls
+        if call[0] == "POST" and call[1].endswith("/api/tasks")
+    )
+    task_body = task_call[2]["json"]
+    assert task_body["checkout_proxy"] == ""
+    assert task_body["update_proxy"] == ""
+
+    payment_call = next(
+        call for call in transport.calls
+        if call[0] == "POST" and call[1].endswith("/api/protocol-payments")
+    )
+    payment_body = payment_call[2]["json"]
+    assert payment_body["source_task_id"] == "task-1"
+    assert payment_body["checkout_proxy"] == ""
+
+    # Proxy selection/retry belongs entirely to the CDK website.  The local
+    # integration must never revive its retired proxy-rotation payload.
+    assert all(
+        "checkout_proxy_rotation" not in (kwargs.get("json") or {})
+        for _method, _url, kwargs in transport.calls
+    )
 
     # Landing bootstrap happened once and all API calls carry the stable
     # visitor/password headers.  No raw CDK is sent after activation.
