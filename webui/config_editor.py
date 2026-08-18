@@ -1217,21 +1217,23 @@ def _normalize_extract_mode_updates(updates: dict) -> tuple[dict, dict | None]:
         values["EXTRACT_LINK_BACKEND"] = mode["persisted_backend"]
         values["CDK_WEB_ENABLED"] = mode["persisted_cdk_web_enabled"]
     if mode.get("cdk_mode_active"):
-        # CDK uses cdk_web_backend._run_payment directly.  Persisting the
-        # local auto-payment switch or its service autostart at the same time
-        # leaves a second route armed, so shut both off atomically.
-        values["PAYPAL_PAYMENT_AUTO"] = False
-        values["PAYPAL_PAYMENT_AUTOSTART_SERVICE"] = False
-        mode["configuration_enforced"] = True
-        mode["local_payment_auto_forced_off"] = True
-        mode["local_payment_service_autostart_forced_off"] = True
+        # Keep local-route preferences intact while CDK is selected. Runtime
+        # guards in paypal_payment_service prevent the local queue from
+        # accepting work in CDK mode, so persisting False here only destroys
+        # the user's independent local-route setup.
+        mode["local_payment_auto_forced_off"] = False
+        mode["local_payment_service_autostart_forced_off"] = False
+        mode["local_payment_runtime_suspended"] = True
+        mode["local_payment_preferences_preserved"] = True
         mode["mode_message"] = (
             f"{mode.get('mode_message') or 'CDK 模式已启用'}；"
-            "已关闭本地协议支付自动队列及服务自启动"
+            "本地协议支付配置已保留，运行时保持互斥暂停"
         )
     else:
         mode["local_payment_auto_forced_off"] = False
         mode["local_payment_service_autostart_forced_off"] = False
+        mode["local_payment_runtime_suspended"] = False
+        mode["local_payment_preferences_preserved"] = True
     return values, mode
 
 

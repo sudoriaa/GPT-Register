@@ -146,6 +146,10 @@ def test_payment_proxy_precedence_is_custom_then_global_then_registration() -> N
         assert selected == "http://global-user:global-pass@global.example:2000"
         assert source == "global"
 
+        selected, source = payment.resolve_payment_proxy(7, "")
+        assert selected == "http://global-user:global-pass@global.example:2000"
+        assert source == "global"
+
     with (
         patch.object(payment.db, "get_account", return_value=account),
         patch.object(payment, "_runtime_setting", return_value=""),

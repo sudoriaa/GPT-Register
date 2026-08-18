@@ -108,7 +108,8 @@ def resolve_backend_mode(backend: object, cdk_web_enabled: object) -> dict:
         "routes_mutually_exclusive": True,
         "mode_forced": forced,
         # The standalone local PayPal agreement runner is a separate payment
-        # route.  When CDK owns extraction/payment it must stay off too.
+        # route.  When CDK owns extraction/payment it is suspended at runtime;
+        # its persisted preferences remain available for a later local switch.
         "local_payment_auto_allowed": effective_backend != "cdk_web",
         "mode_message": message,
     }
@@ -179,7 +180,11 @@ def resolve_mode_update(
         )
     state["mode_message"] = message
     state["configuration_enforced"] = bool(conflict_resolved or state["mode_forced"])
-    state["persisted_paypal_payment_auto"] = False if state["cdk_mode_active"] else None
+    # Route selection never rewrites the independent local-payment preference.
+    # Runtime guards keep it dormant while CDK is the active route.
+    state["persisted_paypal_payment_auto"] = None
+    state["local_payment_runtime_suspended"] = bool(state["cdk_mode_active"])
+    state["local_payment_preferences_preserved"] = True
     state["requested_backend_input"] = candidate_backend if backend_given else None
     state["requested_cdk_web_enabled_input"] = candidate_cdk if cdk_given else None
     state["changed"] = (

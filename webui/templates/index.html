@@ -2444,7 +2444,7 @@
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">Paypal协议</span>
-          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddSelectedToPaypalPipelineV2" disabled title="将选中账号加入提链支付流水线；系统会复核 Plus 试用资格和 AT。启用 CDK 模式时自动进入 CDK 提链→协议支付路线">加入提链支付流水线</button>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddSelectedToPaypalPipelineV2" disabled title="将选中账号加入 PayPal协议页当前选中的完整路线：CDK 提链 + 支付或本地提链 + 支付">加入提链支付流水线</button>
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">快捷复制</span>
@@ -3966,7 +3966,7 @@ function _extractLinkAction(r) {
   const retry = ['success', 'expired', 'failed'].includes(s);
   const title = failedReason
     ? `重新加入提链支付流水线；上次失败原因：${failedReason}`
-    : '将该 free(可Plus试用) 账号加入 Paypal 提链支付流水线；CDK 模式下自动走 CDK 提链→协议支付';
+    : '将该 free(可Plus试用) 账号加入 PayPal协议页当前选中的完整提链 + 支付路线';
   return `<button type="button" class="good" data-extract-link="${esc(r.id)}" title="${esc(title)}">${retry ? '重新入流水线' : '加入流水线'}</button>`;
 }
 function _codexAction(r) {
@@ -5058,9 +5058,9 @@ function _extractPipelineRouteLabel(payload) {
   const rows = Array.isArray(payload && payload.started) ? payload.started : [];
   const routes = [payload && payload.backend, ...rows.map(item => item && item.backend)]
     .map(value => String(value || '').trim().toLowerCase());
-  return routes.some(value => value === 'cdk_web' || value.includes('cdk'))
-    ? 'CDK 提链支付流水线'
-    : '提链支付流水线';
+  if (routes.some(value => value === 'cdk_web' || value.includes('cdk'))) return 'CDK 提链支付流水线';
+  if (routes.some(value => value === 'local')) return '本地提链支付流水线';
+  return '提链支付流水线';
 }
 
 async function extractOneLink(id, btn) {
@@ -5071,7 +5071,7 @@ async function extractOneLink(id, btn) {
     showToast('仅支持 free(可Plus试用) 账号加入提链支付流水线');
     return;
   }
-  if (!confirm(`确定将该账号加入提链支付流水线吗？\n\n${acc.email || ('#' + id)}\n\n系统会使用该账号 AT，并按 Paypal协议页设置的唯一生效路线执行；CDK 模式会继续协议支付。`)) return;
+  if (!confirm(`确定将该账号加入提链支付流水线吗？\n\n${acc.email || ('#' + id)}\n\n系统会使用该账号 AT，并按 PayPal协议页当前单选路线执行完整流程：CDK 提链 + 支付或本地提链 + 支付。`)) return;
   const old = btn.textContent;
   btn.disabled = true;
   btn.textContent = '加入中…';
@@ -5099,7 +5099,7 @@ async function extractSelectedLinks() {
   const eligibilityHint = eligible.length
     ? `当前页已确认可试用 ${eligible.length} 个`
     : '当前页尚未确认 Plus 试用资格';
-  if (!confirm(`确定将选中的 ${ids.length} 个账号加入提链支付流水线吗？\n\n${eligibilityHint}${unknown ? `；其他页/未加载 ${unknown} 个` : ''}\n服务端会再次复核 free(可Plus试用) 和 AT，不符合条件或正在执行的账号会自动跳过。CDK 模式下会继续协议支付。`)) return;
+  if (!confirm(`确定将选中的 ${ids.length} 个账号加入提链支付流水线吗？\n\n${eligibilityHint}${unknown ? `；其他页/未加载 ${unknown} 个` : ''}\n服务端会再次复核 free(可Plus试用) 和 AT，不符合条件或正在执行的账号会自动跳过；其余账号按 PayPal协议页当前单选路线完成提链 + 支付。`)) return;
   const btn = $('#btnAddSelectedToPaypalPipelineV2');
   if (!btn) return;
   const old = btn.textContent;

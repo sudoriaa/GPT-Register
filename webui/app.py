@@ -1605,7 +1605,7 @@ def create_app(auth_code: str | None = None) -> Flask:
     @app.post("/api/accounts/extract-link")
     @app.post("/api/paypal-protocol/extract")
     def api_account_extract_link():
-        """单账号 PayPal 提链。Body {account_id|id, proxy?, link_type?, cdk?}。"""
+        """单账号 PayPal 提链。Body {account_id|id, proxy?, payment_proxy?, link_type?, cdk?}。"""
         data = request.get_json(silent=True) or {}
         acc_id = data.get("account_id") or data.get("id")
         try:
@@ -1620,14 +1620,22 @@ def create_app(auth_code: str | None = None) -> Flask:
         if not token:
             return jsonify({"ok": False, "error": "该账号没有 access_token"}), 400
         try:
+            enqueue_kwargs = {
+                "account_id": int(acc.get("id")),
+                "email": acc.get("email") or "",
+                "access_token": token,
+                "trigger": "manual",
+                "link_type": data.get("link_type"),
+                "cdk": data.get("cdk"),
+                "proxy": data.get("proxy") if "proxy" in data else None,
+            }
+            # payment_proxy is a local full-pipeline override.  The CDK
+            # workbench owns its entire payment leg, so never include this
+            # field in the CDK extraction task context.
+            if extract_link_service.backend_name() == "local" and "payment_proxy" in data:
+                enqueue_kwargs["payment_proxy"] = data.get("payment_proxy")
             queued = extract_link_service.enqueue_account_extract(
-                account_id=int(acc.get("id")),
-                email=acc.get("email") or "",
-                access_token=token,
-                trigger="manual",
-                link_type=data.get("link_type"),
-                cdk=data.get("cdk"),
-                proxy=data.get("proxy") if "proxy" in data else None,
+                **enqueue_kwargs,
             )
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 400
@@ -1640,7 +1648,7 @@ def create_app(auth_code: str | None = None) -> Flask:
     @app.post("/api/accounts/extract-link-bulk")
     @app.post("/api/paypal-protocol/extract-bulk")
     def api_accounts_extract_link_bulk():
-        """批量 PayPal 提链。Body {account_ids:[...], proxy?, link_type?, cdk?}。"""
+        """批量 PayPal 提链。Body {account_ids:[...], proxy?, payment_proxy?, link_type?, cdk?}。"""
         data = request.get_json(silent=True) or {}
         ids = data.get("account_ids") or data.get("ids") or []
         if not isinstance(ids, list) or not ids:
@@ -1653,6 +1661,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         failed = []
         skipped = []
         seen = set()
+        local_route = extract_link_service.backend_name() == "local"
         for raw in ids:
             try:
                 acc_id = int(raw)
@@ -1675,15 +1684,18 @@ def create_app(auth_code: str | None = None) -> Flask:
                 skipped.append({"id": acc_id, "email": email, "reason": "缺少 access_token"})
                 continue
             try:
-                queued = extract_link_service.enqueue_account_extract(
-                    account_id=acc_id,
-                    email=email or "",
-                    access_token=token,
-                    trigger="manual_bulk",
-                    link_type=data.get("link_type"),
-                    cdk=data.get("cdk"),
-                    proxy=data.get("proxy") if "proxy" in data else None,
-                )
+                enqueue_kwargs = {
+                    "account_id": acc_id,
+                    "email": email or "",
+                    "access_token": token,
+                    "trigger": "manual_bulk",
+                    "link_type": data.get("link_type"),
+                    "cdk": data.get("cdk"),
+                    "proxy": data.get("proxy") if "proxy" in data else None,
+                }
+                if local_route and "payment_proxy" in data:
+                    enqueue_kwargs["payment_proxy"] = data.get("payment_proxy")
+                queued = extract_link_service.enqueue_account_extract(**enqueue_kwargs)
             except Exception as exc:
                 failed.append({"id": acc_id, "email": email, "error": f"{type(exc).__name__}: {exc}"})
                 continue

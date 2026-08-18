@@ -27,6 +27,101 @@ def _client():
     return client
 
 
+def _eligible_account(account_id: int, email: str | None = None) -> dict:
+    return {
+        "id": account_id,
+        "email": email or f"account-{account_id}@example.com",
+        "access_token": f"AT-{account_id}",
+        "current_plan_type": "free",
+        "plus_trial_eligible": True,
+    }
+
+
+def test_extract_single_forwards_payment_proxy_only_for_local_route():
+    client = _client()
+    account = _eligible_account(21)
+
+    with patch("webui.app.db.get_account", return_value=account), \
+         patch("webui.app.extract_link_service.backend_name", return_value="local"), \
+         patch(
+             "webui.app.extract_link_service.enqueue_account_extract",
+             return_value={"accepted": True, "busy": False, "status": "queued"},
+         ) as enqueue:
+        response = client.post(
+            "/api/paypal-protocol/extract",
+            json={
+                "account_id": 21,
+                "proxy": "http://extract.example:1",
+                "payment_proxy": "socks5://pay-user:pay-pass@payment.example:2",
+            },
+        )
+
+    assert response.status_code == 202
+    assert enqueue.call_args.kwargs["payment_proxy"] == "socks5://pay-user:pay-pass@payment.example:2"
+    assert enqueue.call_args.kwargs["proxy"] == "http://extract.example:1"
+
+    with patch("webui.app.db.get_account", return_value=account), \
+         patch("webui.app.extract_link_service.backend_name", return_value="cdk_web"), \
+         patch(
+             "webui.app.extract_link_service.enqueue_account_extract",
+             return_value={"accepted": True, "busy": False, "status": "queued"},
+         ) as enqueue:
+        response = client.post(
+            "/api/paypal-protocol/extract",
+            json={"account_id": 21, "payment_proxy": "http://must-not-reach-cdk.example:3"},
+        )
+
+    assert response.status_code == 202
+    assert "payment_proxy" not in enqueue.call_args.kwargs
+
+
+def test_extract_bulk_forwards_payment_proxy_only_for_local_tasks():
+    client = _client()
+    accounts = {31: _eligible_account(31), 32: _eligible_account(32)}
+
+    with patch("webui.app.db.get_account", side_effect=lambda account_id: accounts.get(int(account_id))), \
+         patch("webui.app.extract_link_service.backend_name", return_value="local") as backend_name, \
+         patch(
+             "webui.app.extract_link_service.enqueue_account_extract",
+             return_value={"accepted": True, "busy": False, "status": "queued"},
+         ) as enqueue:
+        response = client.post(
+            "/api/paypal-protocol/extract-bulk",
+            json={
+                "account_ids": [31, 32],
+                "payment_proxy": "http://bulk-user:bulk-pass@payment.example:4",
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.get_json()["started_count"] == 2
+    assert backend_name.call_count == 1
+    assert enqueue.call_count == 2
+    assert {
+        call.kwargs["payment_proxy"]
+        for call in enqueue.call_args_list
+    } == {"http://bulk-user:bulk-pass@payment.example:4"}
+
+    with patch("webui.app.db.get_account", side_effect=lambda account_id: accounts.get(int(account_id))), \
+         patch("webui.app.extract_link_service.backend_name", return_value="cdk_web") as backend_name, \
+         patch(
+             "webui.app.extract_link_service.enqueue_account_extract",
+             return_value={"accepted": True, "busy": False, "status": "queued"},
+         ) as enqueue:
+        response = client.post(
+            "/api/paypal-protocol/extract-bulk",
+            json={
+                "account_ids": [31, 32],
+                "payment_proxy": "http://must-not-reach-cdk.example:5",
+            },
+        )
+
+    assert response.status_code == 202
+    assert backend_name.call_count == 1
+    assert enqueue.call_count == 2
+    assert all("payment_proxy" not in call.kwargs for call in enqueue.call_args_list)
+
+
 def test_payment_bulk_deduplicates_ids_and_classifies_fake_queue_results():
     client = _client()
     accounts = {

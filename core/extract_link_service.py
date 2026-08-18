@@ -116,15 +116,18 @@ def public_settings() -> dict:
     """返回前端可展示的提链设置，绝不返回代理认证或 CDK。"""
     mode = mode_state()
     backend = str(mode["backend"])
+    local_proxy_configured = bool(str(_runtime_setting("EXTRACT_LINK_PROXY", "") or "").strip())
     result = {
         **mode,
         "auto_extract": auto_extract_enabled(),
+        # Always expose whether the independent local-route preference exists.
+        # `custom_proxy_configured` remains the effective-current-route value
+        # for compatibility with older callers.
+        "local_proxy_configured": local_proxy_configured,
         # The CDK workbench owns the task proxy and the local client connects
         # to the workbench directly.  Do not let a stale legacy CDK_WEB_PROXY
         # value make the UI or callers think a local proxy participates.
-        "custom_proxy_configured": False if backend == "cdk_web" else bool(
-            str(_runtime_setting("EXTRACT_LINK_PROXY", "") or "").strip()
-        ),
+        "custom_proxy_configured": False if backend == "cdk_web" else local_proxy_configured,
         "country": str(_runtime_setting("EXTRACT_LINK_COUNTRY", "GB") or "GB").strip().upper(),
         "payment_method": str(_runtime_setting("EXTRACT_LINK_PAYMENT_METHOD", "paypal") or "paypal").strip().lower(),
         "expiry_minutes": _int_setting("EXTRACT_LINK_EXPIRY_MINUTES", 60, 1, 24 * 60),
@@ -605,7 +608,12 @@ def _format_failure_reason(exc: Exception, logs: list[str] | None = None, last_e
     return reason[:500]
 
 
-def _maybe_enqueue_paypal_payment(account_id: int, *, trigger: str) -> None:
+def _maybe_enqueue_paypal_payment(
+    account_id: int,
+    *,
+    trigger: str,
+    payment_proxy: str | None = None,
+) -> None:
     """提链成功后按独立开关自动进入协议支付队列。"""
     try:
         from core import paypal_payment_service
@@ -614,6 +622,7 @@ def _maybe_enqueue_paypal_payment(account_id: int, *, trigger: str) -> None:
         queued = paypal_payment_service.enqueue_account_payment(
             account_id=int(account_id),
             trigger=f"extract_{trigger}"[:80],
+            proxy=payment_proxy,
         )
         if queued.get("accepted"):
             logger.info("[提链] 已自动入协议支付队列: account_id=%s", account_id)
@@ -621,7 +630,7 @@ def _maybe_enqueue_paypal_payment(account_id: int, *, trigger: str) -> None:
             logger.warning(
                 "[提链] 自动协议支付入队失败: account_id=%s reason=%s",
                 account_id,
-                _redact_text(queued.get("error") or "unknown"),
+                _redact_text(queued.get("error") or "unknown", proxy=payment_proxy or ""),
             )
     except Exception as exc:
         # 提链本身已经成功，支付入队异常只记录给人工处理，不回滚提链结果。
@@ -638,6 +647,7 @@ def _run_extract(
     trigger: str,
     proxy: str | None = None,
     proxy_source: str = "none",
+    payment_proxy: str | None = None,
 ) -> dict:
     logs: list[str] = []
     last_event = None
@@ -683,7 +693,11 @@ def _run_extract(
                 "proxy_source": proxy_source,
             }
             db.update_account_extract(account_id, final)
-            _maybe_enqueue_paypal_payment(account_id, trigger=trigger)
+            _maybe_enqueue_paypal_payment(
+                account_id,
+                trigger=trigger,
+                payment_proxy=payment_proxy,
+            )
             logger.info("[提链] 本地成功: %s type=%s", email, link_type)
             return final
 
@@ -760,8 +774,10 @@ def enqueue_account_extract(
     link_type: str | None = None,
     cdk: str | None = None,
     proxy: str | None = None,
+    payment_proxy: str | None = None,
 ) -> dict:
-    if backend_name() == "cdk_web":
+    route = backend_name()
+    if route == "cdk_web":
         from core import cdk_web_backend
         return cdk_web_backend.enqueue_extract(
             account_id=account_id,
@@ -774,9 +790,9 @@ def enqueue_account_extract(
         return {"accepted": False, "busy": False, "error": "提链队列已满"}
     try:
         lt = _link_type(link_type)
-        code = None if backend_name() == "local" else _cdk(cdk)
+        code = None if route == "local" else _cdk(cdk)
         selected_proxy, proxy_source = resolve_extract_proxy(account_id, proxy)
-        if backend_name() == "local" and not selected_proxy:
+        if route == "local" and not selected_proxy:
             _QUEUE_SLOTS.release()
             return {
                 "accepted": False,
@@ -796,13 +812,14 @@ def enqueue_account_extract(
             trigger=trigger,
             proxy=selected_proxy,
             proxy_source=proxy_source,
+            payment_proxy=payment_proxy if route == "local" else None,
         )
         return {
             "accepted": True,
             "busy": False,
             "future": fut,
             "link_type": lt,
-            "backend": backend_name(),
+            "backend": route,
             "proxy_source": proxy_source,
         }
     except Exception:

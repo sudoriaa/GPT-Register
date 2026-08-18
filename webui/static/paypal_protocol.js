@@ -21,6 +21,9 @@
     initialized: false,
     settings: {},
     settingsDirty: new Set(),
+    settingsLoaded: false,
+    settingsSaving: false,
+    settingsEpoch: 0,
     queue: {},
     cdkItems: [],
     cdkSelected: new Set(),
@@ -349,6 +352,7 @@
   }
 
   function renderIntervention(item, index) {
+    if (!itemMatchesActiveRoute(item) || routeSelectionPending()) return '';
     const intervention = paymentIntervention(item);
     const accountId = itemAccountId(item);
     if (!intervention || !accountId) return '';
@@ -388,11 +392,26 @@
     return ['queued', 'pending', 'waiting', 'running', 'processing', 'retrying'].includes(itemPaymentStatus(item));
   }
 
+  function itemRoute(item) {
+    const extractBackend = String(valueFrom(item, ['extract_link_backend', 'extract_backend']) || '').trim().toLowerCase();
+    const paymentBackend = String(valueFrom(item, ['paypal_payment_backend', 'payment_backend']) || '').trim().toLowerCase();
+    const backend = extractBackend || paymentBackend;
+    if (!backend) return '';
+    if (backend === 'cdk_web' || backend.includes('cdk')) return 'cdk_web';
+    if (backend === 'local' || backend.includes('local') || backend.includes('paypal')) return 'local';
+    return '';
+  }
+
+  function itemMatchesActiveRoute(item) {
+    const route = itemRoute(item);
+    return !route || route === routeFromSettings(state.settings);
+  }
+
   function canRunPayment(item) {
     // The PP协议 link is valid for 60 minutes.  Keep expired extraction
     // records visible for manual re-extraction, but do not offer a payment
     // action that the backend will necessarily reject.
-    return !isPaymentSuccess(item) && !isExpired(item) && !paymentBusy(item) && !paymentIntervention(item)
+    return itemMatchesActiveRoute(item) && !isPaymentSuccess(item) && !isExpired(item) && !paymentBusy(item) && !paymentIntervention(item)
       && (itemBucket(item) === 'extract_success_payment_failed' || Boolean(itemLink(item)));
   }
 
@@ -405,39 +424,54 @@
         <header class="paypal-protocol-head">
           <div>
             <h1>PayPal 协议</h1>
-            <p>符合条件的账号提交 AT 与 CDK 后，由 1K50 网站完成提链和支付，结果自动归档。</p>
+            <p>CDK 网站托管和本地协议项目是两条独立路线；选择其中一条后，账号会连续完成提链与支付。</p>
           </div>
         </header>
 
-        <section class="paypal-protocol-card paypal-protocol-automation-card" aria-label="CDK 流水线">
+        <section class="paypal-protocol-card paypal-protocol-automation-card" aria-label="PayPal 提链支付路线">
           <div class="paypal-protocol-card-head">
             <div>
-              <span class="paypal-protocol-eyebrow">当前运行模式</span>
-              <h2>1K50 CDK 提链支付</h2>
-              <p>CDK 网站直连；网站自行分配任务代理，本地不参与代理轮换。</p>
+              <span class="paypal-protocol-eyebrow">执行路线</span>
+              <h2 id="paypalRouteTitle">选择提链 + 支付路线</h2>
+              <p id="paypalRouteDescription">两条路线互斥，保存后新任务只会进入所选路线。</p>
             </div>
             <span class="paypal-protocol-route-state" id="paypalRouteState" aria-live="polite">读取中</span>
           </div>
           <div class="paypal-protocol-card-body">
+            <fieldset class="paypal-protocol-route-choice">
+              <legend>运行路线（单选）</legend>
+              <div class="paypal-protocol-route-options">
+                <label class="paypal-protocol-route-option" data-paypal-route-option="cdk_web">
+                  <input type="radio" name="paypalRoute" id="paypalRouteCdk" value="cdk_web">
+                  <span><strong>CDK 提链 + 支付</strong><small>AT + CDK 提交到 1K50；网站自行代理并连续完成提链、支付。</small></span>
+                  <em>网站托管</em>
+                </label>
+                <label class="paypal-protocol-route-option" data-paypal-route-option="local">
+                  <input type="radio" name="paypalRoute" id="paypalRouteLocal" value="local">
+                  <span><strong>本地提链 + 支付</strong><small>本地提链项目生成链接，再由本地协议项目通过 SMSBower 完成支付。</small></span>
+                  <em>本地项目</em>
+                </label>
+              </div>
+            </fieldset>
             <div class="paypal-protocol-route-banner" id="paypalRouteBanner" aria-live="polite">正在读取当前路线…</div>
-            <ol class="paypal-protocol-flow" aria-label="CDK 自动化流程">
+            <ol class="paypal-protocol-flow" aria-label="当前路线流程">
               <li><span>1</span><div><strong>检测资格</strong><small>确认账号具备 Plus 试用资格</small></div></li>
-              <li><span>2</span><div><strong>提交 AT + CDK</strong><small>从 CDK 池自动取可用项</small></div></li>
-              <li><span>3</span><div><strong>网站提链并支付</strong><small>失败时按设置更换 CDK 重试</small></div></li>
+              <li><span>2</span><div><strong id="paypalFlowExtractTitle">提交提链任务</strong><small id="paypalFlowExtractHint">按当前路线生成 PayPal 链接</small></div></li>
+              <li><span>3</span><div><strong id="paypalFlowPaymentTitle">继续协议支付</strong><small id="paypalFlowPaymentHint">提链成功后自动进入支付</small></div></li>
               <li><span>4</span><div><strong>归档结果</strong><small>成功和失败账号分区保留</small></div></li>
             </ol>
             <div class="paypal-protocol-policy-row">
               <div>
                 <strong>自动加入流水线</strong>
-                <small>开启后，套餐检测通过且 AT 有效的账号会自动进入完整 CDK 提链支付流程；账号列表仍可手动加入。</small>
+                <small id="paypalAutoExtractHint">开启后，套餐检测通过且 AT 有效的账号会自动进入当前所选路线；账号列表仍可手动加入。</small>
               </div>
               <label class="paypal-protocol-toggle" for="paypalAutoExtract"><input type="checkbox" role="switch" id="paypalAutoExtract"> 启用自动加入</label>
             </div>
-            <div class="paypal-protocol-fixed-facts" aria-label="固定执行规则">
-              <span>CDK 路线固定启用</span><span>提链成功后继续支付</span><span>CDK 网站自动代理</span>
+            <div class="paypal-protocol-fixed-facts" id="paypalRouteFacts" aria-label="当前路线规则">
+              <span>读取路线设置中</span>
             </div>
             <div class="paypal-protocol-settings-footer">
-              <button type="button" class="btn primary" id="paypalSaveSettings">保存自动化设置</button>
+              <button type="button" class="btn primary" id="paypalSaveSettings">保存并应用路线</button>
               <div class="paypal-protocol-settings-status" id="paypalSettingsStatus">正在读取设置…</div>
             </div>
           </div>
@@ -463,6 +497,8 @@
               <option value="failed">提链失败</option>
               <option value="expired">链接过期</option>
             </select>
+            <input class="paypal-protocol-bulk-proxy" type="password" id="paypalRunProxy" data-paypal-route-panel="local" hidden autocomplete="new-password" spellcheck="false" placeholder="本次本地提链代理（留空用注册代理）">
+            <input class="paypal-protocol-bulk-proxy" type="password" id="paypalRunPaymentProxy" data-paypal-route-panel="local" hidden autocomplete="new-password" spellcheck="false" placeholder="本次本地支付代理（留空用注册代理）">
           </div>
           <div class="paypal-protocol-bulk-actions">
             <button type="button" class="btn good" id="paypalExtractSelected" disabled hidden>重跑选中流水线</button>
@@ -482,36 +518,83 @@
           <div class="paypal-protocol-pager" id="paypalPager"></div>
         </section>
 
-        <section class="paypal-protocol-card paypal-protocol-management-card" aria-label="CDK 管理">
+        <section class="paypal-protocol-card paypal-protocol-management-card" aria-label="路线设置">
           <div class="paypal-protocol-card-head">
-            <div><h2>CDK 管理</h2><p>低频维护项默认收起，不影响日常查看处理结果。</p></div>
+            <div><h2 id="paypalManagementTitle">路线设置</h2><p id="paypalManagementHint">仅显示当前选择路线的参数，另一条路线保持独立。</p></div>
           </div>
           <div class="paypal-protocol-disclosures">
-            <details class="paypal-protocol-disclosure" id="paypalCdkPoolDetails">
-              <summary><span><strong>CDK 池</strong><small id="paypalCdkStatus">CDK 池正在读取…</small></span><span class="paypal-protocol-disclosure-action">管理</span></summary>
-              <div class="paypal-protocol-disclosure-body">
-                <label class="paypal-protocol-field" for="paypalCdkCodes"><span>批量导入</span><textarea id="paypalCdkCodes" rows="3" placeholder="一行一个 CDK；完整值只在导入请求中使用，不会回显"></textarea></label>
-                <div class="paypal-protocol-cdk-actions"><button type="button" class="btn primary" id="paypalCdkImport">追加导入</button><button type="button" class="btn" id="paypalCdkReplace">清空后导入</button><button type="button" class="btn" id="paypalCdkRefresh">刷新</button><button type="button" class="btn" id="paypalCdkReset" disabled>恢复选中为可用</button><button type="button" class="btn danger" id="paypalCdkDelete" disabled>删除选中</button></div>
-                <div class="paypal-protocol-cdk-list" id="paypalCdkList"></div>
-              </div>
-            </details>
-            <details class="paypal-protocol-disclosure" id="paypalAdvancedDetails">
-              <summary><span><strong>高级参数</strong><small>工作台、国家、重试与接码设置</small></span><span class="paypal-protocol-disclosure-action">设置</span></summary>
-              <div class="paypal-protocol-disclosure-body">
-                <div class="paypal-protocol-settings-grid">
-                  <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalCdkBaseUrl"><span>1K50 工作台地址</span><input type="url" id="paypalCdkBaseUrl" placeholder="https://www.1k50.xyz/pp-cdk-vak"><small>CDK 网站直连访问。</small></label>
-                  <label class="paypal-protocol-field" for="paypalCdkCountry"><span>账单国家</span><input type="text" id="paypalCdkCountry" maxlength="2" placeholder="GB"><small>两位国家代码。</small></label>
-                  <label class="paypal-protocol-field" for="paypalCdkProtocolCountry"><span>协议国家</span><input type="text" id="paypalCdkProtocolCountry" maxlength="2" placeholder="GB"><small>留空时由服务端处理。</small></label>
-                  <label class="paypal-protocol-field" for="paypalCdkRetries"><span>失败后更换 CDK 次数</span><input type="number" id="paypalCdkRetries" min="0" max="20" step="1" value="2"><small>提链或支付失败均计入。</small></label>
-                  <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalCdkSmsApiKey"><span>接码 API Key（选填）</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalCdkSmsApiKey" autocomplete="new-password" placeholder="server-auto 可留空"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalCdkSmsApiKey">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="cdk_sms_api_key">清除</button></span><small>留空使用 server-auto；已保存的 Key 不会回显。</small></label>
+            <div class="paypal-protocol-route-settings" data-paypal-route-panel="cdk_web">
+              <details class="paypal-protocol-disclosure" id="paypalCdkPoolDetails">
+                <summary><span><strong>CDK 池</strong><small id="paypalCdkStatus">CDK 池正在读取…</small></span><span class="paypal-protocol-disclosure-action">管理</span></summary>
+                <div class="paypal-protocol-disclosure-body">
+                  <label class="paypal-protocol-field" for="paypalCdkCodes"><span>批量导入</span><textarea id="paypalCdkCodes" rows="3" placeholder="一行一个 CDK；完整值只在导入请求中使用，不会回显"></textarea></label>
+                  <div class="paypal-protocol-cdk-actions"><button type="button" class="btn primary" id="paypalCdkImport">追加导入</button><button type="button" class="btn" id="paypalCdkReplace">清空后导入</button><button type="button" class="btn" id="paypalCdkRefresh">刷新</button><button type="button" class="btn" id="paypalCdkReset" disabled>恢复选中为可用</button><button type="button" class="btn danger" id="paypalCdkDelete" disabled>删除选中</button></div>
+                  <div class="paypal-protocol-cdk-list" id="paypalCdkList"></div>
                 </div>
-                <div class="paypal-protocol-disclosure-save"><button type="button" class="btn primary" data-paypal-save-settings>保存高级参数</button></div>
-              </div>
-            </details>
+              </details>
+              <details class="paypal-protocol-disclosure" id="paypalAdvancedDetails">
+                <summary><span><strong>CDK 路线参数</strong><small>工作台、国家、重试与接码设置</small></span><span class="paypal-protocol-disclosure-action">设置</span></summary>
+                <div class="paypal-protocol-disclosure-body">
+                  <div class="paypal-protocol-settings-grid">
+                    <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalCdkBaseUrl"><span>1K50 工作台地址</span><input type="url" id="paypalCdkBaseUrl" placeholder="https://www.1k50.xyz/pp-cdk-vak"><small>CDK 网站直连访问。</small></label>
+                    <label class="paypal-protocol-field" for="paypalCdkCountry"><span>账单国家</span><input type="text" id="paypalCdkCountry" maxlength="2" placeholder="GB"><small>两位国家代码。</small></label>
+                    <label class="paypal-protocol-field" for="paypalCdkProtocolCountry"><span>协议国家</span><input type="text" id="paypalCdkProtocolCountry" maxlength="2" placeholder="GB"><small>留空时由服务端处理。</small></label>
+                    <label class="paypal-protocol-field" for="paypalCdkRetries"><span>失败后更换 CDK 次数</span><input type="number" id="paypalCdkRetries" min="0" max="20" step="1" value="2"><small>提链或支付失败均计入。</small></label>
+                    <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalCdkSmsApiKey"><span>接码 API Key（选填）</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalCdkSmsApiKey" autocomplete="new-password" placeholder="server-auto 可留空"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalCdkSmsApiKey">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="cdk_sms_api_key">清除</button></span><small>留空使用 server-auto；已保存的 Key 不会回显。</small></label>
+                  </div>
+                  <div class="paypal-protocol-disclosure-save"><button type="button" class="btn primary" data-paypal-save-settings>保存 CDK 参数</button></div>
+                </div>
+              </details>
+            </div>
+            <div class="paypal-protocol-route-settings" data-paypal-route-panel="local" hidden>
+              <details class="paypal-protocol-disclosure" id="paypalLocalExtractDetails">
+                <summary><span><strong>本地提链参数</strong><small>默认使用账号注册代理，也可设置全局覆盖</small></span><span class="paypal-protocol-disclosure-action">设置</span></summary>
+                <div class="paypal-protocol-disclosure-body">
+                  <div class="paypal-protocol-settings-grid is-local">
+                    <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalDefaultProxy"><span>全局提链代理（选填）</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalDefaultProxy" autocomplete="new-password" spellcheck="false" placeholder="留空则使用账号注册代理"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalDefaultProxy">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="proxy">清除</button></span><small>支持 URL 或 host:port:user:password；仅用于本地路线。</small></label>
+                    <div class="paypal-protocol-field"><span>本地提链项目</span><strong>OAI PayPal Extractor</strong><small>AT 与所选代理交给本地项目生成 PayPal 链接。</small></div>
+                  </div>
+                  <div class="paypal-protocol-disclosure-save"><button type="button" class="btn primary" data-paypal-save-settings>保存本地提链参数</button></div>
+                </div>
+              </details>
+              <details class="paypal-protocol-disclosure" id="paypalLocalPaymentDetails">
+                <summary><span><strong>本地协议支付 + SMSBower</strong><small>账单国家、代理、接码渠道、超时与失败重试</small></span><span class="paypal-protocol-disclosure-action">设置</span></summary>
+                <div class="paypal-protocol-disclosure-body">
+                  <div class="paypal-protocol-settings-grid is-local">
+                    <label class="paypal-protocol-field" for="paypalPaymentCountry"><span>账单国家</span><input type="text" id="paypalPaymentCountry" maxlength="2" autocomplete="off" placeholder="GB"><small>统一生成该国家账单资料。</small></label>
+                    <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalPaymentProxy"><span>全局支付代理（选填）</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalPaymentProxy" autocomplete="new-password" spellcheck="false" placeholder="留空则使用账号注册代理"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalPaymentProxy">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="payment_proxy">清除</button></span><small>仅覆盖本地支付阶段。</small></label>
+                    <label class="paypal-protocol-field" for="paypalSmsCountry"><span>SMSBower 国家</span><input type="text" id="paypalSmsCountry" maxlength="32" autocomplete="off" placeholder="例如 16"><small>接码服务固定为 PayPal。</small></label>
+                    <label class="paypal-protocol-field" for="paypalSmsProviderIds"><span>渠道号</span><input type="text" id="paypalSmsProviderIds" autocomplete="off" spellcheck="false" placeholder="多个渠道用逗号分隔"><small>按填写顺序选择渠道。</small></label>
+                    <label class="paypal-protocol-field paypal-protocol-field-wide" for="paypalSmsApiKey"><span>SMSBower API Key</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalSmsApiKey" autocomplete="new-password" spellcheck="false" placeholder="填写 API Key"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalSmsApiKey">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="sms_api_key">清除</button></span><small>已保存的 Key 不会回显。</small></label>
+                    <label class="paypal-protocol-field" for="paypalSmsTimeout"><span>接码超时（秒）</span><input type="number" id="paypalSmsTimeout" min="20" max="3600" step="1" value="120"><small>单次等待验证码最长时间。</small></label>
+                    <label class="paypal-protocol-field" for="paypalPaymentRetries"><span>失败重试次数</span><input type="number" id="paypalPaymentRetries" min="0" max="20" step="1" value="2"><small>没收到码或支付失败都会计入。</small></label>
+                  </div>
+                  <div class="paypal-protocol-disclosure-save"><button type="button" class="btn primary" data-paypal-save-settings>保存本地支付参数</button></div>
+                </div>
+              </details>
+            </div>
           </div>
         </section>
       </div>`;
+    setSettingsControlsDisabled(true);
     bindEvents();
+  }
+
+  const SETTING_INPUT_IDS = [
+    'paypalAutoExtract', 'paypalCdkBaseUrl', 'paypalCdkCountry', 'paypalCdkProtocolCountry',
+    'paypalCdkRetries', 'paypalCdkSmsApiKey', 'paypalDefaultProxy', 'paypalPaymentCountry',
+    'paypalPaymentProxy', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey',
+    'paypalSmsTimeout', 'paypalPaymentRetries',
+  ];
+
+  function setSettingsControlsDisabled(disabled) {
+    SETTING_INPUT_IDS.forEach((id) => {
+      const input = byId(id);
+      if (input) input.disabled = disabled;
+    });
+    document.querySelectorAll('input[name="paypalRoute"], #paypalSaveSettings, [data-paypal-save-settings], [data-paypal-toggle-secret], [data-paypal-clear-setting]').forEach((control) => {
+      control.disabled = disabled;
+    });
   }
 
   function setInputIfClean(id, settingKey, value) {
@@ -533,26 +616,94 @@
     return booleanFrom(settings, ['cdk_mode_active', 'cdk_web_enabled', 'cdk_enabled'], false);
   }
 
-  function syncRouteUi(settings) {
-    const cdkActive = cdkRouteActive(settings || state.settings);
+  function routeFromSettings(settings) {
+    return cdkRouteActive(settings || state.settings) ? 'cdk_web' : 'local';
+  }
+
+  function selectedRoute() {
+    const selected = document.querySelector('input[name="paypalRoute"]:checked');
+    return selected && selected.value === 'local' ? 'local' : selected && selected.value === 'cdk_web' ? 'cdk_web' : routeFromSettings(state.settings);
+  }
+
+  function routeSelectionPending() {
+    return selectedRoute() !== routeFromSettings(state.settings);
+  }
+
+  function syncRouteUi(routeValue) {
+    const route = routeValue === 'local' ? 'local' : routeValue === 'cdk_web' ? 'cdk_web' : routeFromSettings(routeValue || state.settings);
+    const cdkActive = route === 'cdk_web';
+    const actualRoute = routeFromSettings(state.settings);
+    const pending = route !== actualRoute;
+    document.querySelectorAll('input[name="paypalRoute"]').forEach((input) => {
+      input.checked = input.value === route;
+      const option = input.closest('[data-paypal-route-option]');
+      if (option) option.classList.toggle('is-selected', input.checked);
+    });
+    document.querySelectorAll('[data-paypal-route-panel]').forEach((panel) => {
+      panel.hidden = panel.dataset.paypalRoutePanel !== route;
+      panel.setAttribute('aria-hidden', panel.hidden ? 'true' : 'false');
+    });
+
+    const title = byId('paypalRouteTitle');
+    const description = byId('paypalRouteDescription');
+    const extractTitle = byId('paypalFlowExtractTitle');
+    const extractHint = byId('paypalFlowExtractHint');
+    const paymentTitle = byId('paypalFlowPaymentTitle');
+    const paymentHint = byId('paypalFlowPaymentHint');
+    const autoHint = byId('paypalAutoExtractHint');
+    const facts = byId('paypalRouteFacts');
+    const managementTitle = byId('paypalManagementTitle');
+    const managementHint = byId('paypalManagementHint');
+    if (cdkActive) {
+      if (title) title.textContent = 'CDK 提链 + 支付';
+      if (description) description.textContent = 'AT 与 CDK 提交到 1K50 网站，网站自行代理并连续完成提链和支付。';
+      if (extractTitle) extractTitle.textContent = '提交 AT + CDK';
+      if (extractHint) extractHint.textContent = '从 CDK 池自动领取可用 CDK';
+      if (paymentTitle) paymentTitle.textContent = '网站提链并支付';
+      if (paymentHint) paymentHint.textContent = '失败时按设置更换 CDK 重试';
+      if (autoHint) autoHint.textContent = '开启后，资格通过且 AT 有效的账号自动进入 CDK 完整流水线；账号列表仍可手动加入。';
+      if (facts) facts.innerHTML = '<span>1K50 网站直连</span><span>提链成功后继续支付</span><span>网站自行分配代理</span>';
+      if (managementTitle) managementTitle.textContent = 'CDK 路线设置';
+      if (managementHint) managementHint.textContent = '管理 CDK 池、1K50 工作台、国家、重试与接码参数。';
+    } else {
+      if (title) title.textContent = '本地提链 + 支付';
+      if (description) description.textContent = '本地提链项目生成链接，再由本地协议项目通过 SMSBower 完成支付。';
+      if (extractTitle) extractTitle.textContent = '本地项目提链';
+      if (extractHint) extractHint.textContent = '默认使用账号注册代理，可自定义覆盖';
+      if (paymentTitle) paymentTitle.textContent = '本地协议支付';
+      if (paymentHint) paymentHint.textContent = 'SMSBower 接码，失败按设置重新执行';
+      if (autoHint) autoHint.textContent = '开启后，资格通过且 AT 有效的账号自动进入本地完整流水线；账号列表仍可手动加入。';
+      if (facts) facts.innerHTML = '<span>本地项目提链</span><span>提链成功后继续支付</span><span>注册代理或自定义代理</span>';
+      if (managementTitle) managementTitle.textContent = '本地路线设置';
+      if (managementHint) managementHint.textContent = '本地提链代理与协议支付、SMSBower 参数分别维护。';
+    }
+
     const routeState = byId('paypalRouteState');
     if (routeState) {
-      routeState.classList.toggle('is-warning', !cdkActive);
-      routeState.textContent = cdkActive ? 'CDK 运行中' : '等待保存启用';
+      routeState.classList.toggle('is-warning', pending);
+      routeState.textContent = pending
+        ? `待保存：${cdkActive ? 'CDK' : '本地'}路线`
+        : `${cdkActive ? 'CDK' : '本地'}路线运行中`;
     }
     const banner = byId('paypalRouteBanner');
     if (banner) {
-      banner.classList.toggle('is-cdk', cdkActive);
-      banner.classList.toggle('is-warning', !cdkActive);
-      banner.textContent = cdkActive
-        ? '当前路线：CDK 网页托管。提交 AT + CDK 后，由 1K50 网站连续完成提链与支付。'
-        : '当前配置尚未切换到 CDK 网页托管；点击“保存自动化设置”即可恢复固定 CDK 路线。';
+      banner.classList.toggle('is-cdk', cdkActive && !pending);
+      banner.classList.toggle('is-local', !cdkActive && !pending);
+      banner.classList.toggle('is-warning', pending);
+      banner.textContent = pending
+        ? `当前仍运行${actualRoute === 'cdk_web' ? ' CDK' : '本地'}路线；保存后才会切换到${cdkActive ? ' CDK' : '本地'}路线。`
+        : cdkActive
+          ? '当前路线：CDK 网站托管。提交 AT + CDK 后，由 1K50 连续完成提链与支付。'
+          : '当前路线：本地项目。提链成功后自动进入本地协议支付与 SMSBower 接码。';
     }
   }
 
   function applySettings(payload) {
     const settings = payload && payload.settings ? payload.settings : (payload || {});
+    const draftRoute = selectedRoute();
+    const routeDirty = state.settingsDirty.has('route');
     state.settings = settings;
+    state.settingsLoaded = true;
 
     const autoExtract = byId('paypalAutoExtract');
     if (autoExtract && !state.settingsDirty.has('auto_extract')) autoExtract.checked = booleanFrom(settings, ['auto_extract', 'auto_extract_enabled', 'enabled'], false);
@@ -563,16 +714,40 @@
     const cdkSmsConfigured = booleanFrom(settings, ['cdk_web_sms_api_key_configured', 'cdk_sms_api_key_configured'], false);
     applyMaskedSetting('paypalCdkSmsApiKey', 'cdk_sms_api_key', cdkSmsConfigured, '', 'server-auto 可留空');
 
-    syncRouteUi(settings);
+    setInputIfClean('paypalPaymentCountry', 'payment_country', valueFrom(settings, ['payment_country', 'billing_country', 'extract_link_country']) || 'GB');
+    setInputIfClean('paypalSmsCountry', 'sms_country', valueFrom(settings, ['sms_country', 'smsbower_country']) || '16');
+    const providerIds = valueFrom(settings, ['sms_provider_ids', 'provider_ids', 'sms_channels']);
+    setInputIfClean('paypalSmsProviderIds', 'sms_provider_ids', Array.isArray(providerIds) ? providerIds.join(',') : providerIds);
+    setInputIfClean('paypalSmsTimeout', 'sms_timeout', valueFrom(settings, ['sms_timeout', 'sms_timeout_seconds']) || 120);
+    const retrySetting = valueFrom(settings, ['payment_retries', 'retry_count']);
+    setInputIfClean('paypalPaymentRetries', 'payment_retries', retrySetting == null || retrySetting === '' ? 2 : retrySetting);
+
+    const extractProxyConfigured = booleanFrom(settings, ['local_proxy_configured', 'proxy_configured', 'has_proxy', 'custom_proxy_configured'], false);
+    applyMaskedSetting('paypalDefaultProxy', 'proxy', extractProxyConfigured, valueFrom(settings, ['proxy_masked', 'masked_proxy', 'proxy_display']), '留空则使用账号注册代理');
+    const paymentProxyConfigured = booleanFrom(settings, ['payment_proxy_configured', 'has_payment_proxy'], false);
+    applyMaskedSetting('paypalPaymentProxy', 'payment_proxy', paymentProxyConfigured, valueFrom(settings, ['payment_proxy_masked', 'masked_payment_proxy']), '留空则使用账号注册代理');
+    const smsKeyConfigured = booleanFrom(settings, ['sms_api_key_configured', 'has_sms_api_key', 'smsbower_api_key_configured'], false);
+    applyMaskedSetting('paypalSmsApiKey', 'sms_api_key', smsKeyConfigured, valueFrom(settings, ['sms_api_key_masked', 'smsbower_api_key_masked']), '填写 SMSBower API Key');
+
+    const uiRoute = routeDirty ? draftRoute : routeFromSettings(settings);
+    syncRouteUi(uiRoute);
 
     const status = byId('paypalSettingsStatus');
     if (status) {
-      const activeCdk = cdkRouteActive(settings);
       const autoText = autoExtract && autoExtract.checked ? '符合资格后自动加入' : '仅手动加入';
-      const paymentReady = booleanFrom(settings, ['cdk_web_auto_payment', 'cdk_auto_payment'], true);
-      const routeText = activeCdk && paymentReady ? 'CDK 提链支付已就绪' : '保存后启用完整 CDK 提链支付';
-      status.textContent = `${autoText}；${routeText}；${cdkSmsConfigured ? '接码 Key 已配置' : '接码使用 server-auto'}。`;
+      if (state.settingsDirty.has('route') && routeSelectionPending()) {
+        status.textContent = `路线待保存：将切换到${uiRoute === 'cdk_web' ? ' CDK 提链 + 支付' : '本地提链 + 支付'}。`;
+      } else if (state.settingsDirty.size) {
+        status.textContent = '仍有未保存的路线参数；切换到对应路线可继续保存。';
+      } else if (uiRoute === 'cdk_web') {
+        status.textContent = `${autoText}；CDK 提链支付完整链路；${cdkSmsConfigured ? '接码 Key 已配置' : '接码使用 server-auto'}。`;
+      } else {
+        const extractProxyText = extractProxyConfigured ? '提链使用全局代理' : '提链默认使用注册代理';
+        const paymentProxyText = paymentProxyConfigured ? '支付使用全局代理' : '支付默认使用注册代理';
+        status.textContent = `${autoText}；本地提链后自动支付；${extractProxyText}；${paymentProxyText}；${smsKeyConfigured ? 'SMSBower Key 已配置' : 'SMSBower Key 未配置'}。`;
+      }
     }
+    setSettingsControlsDisabled(state.settingsSaving);
   }
 
   function deriveBucketCounts(payload) {
@@ -617,6 +792,7 @@
       return;
     }
 
+    const routePending = routeSelectionPending();
     body.innerHTML = items.map((item, index) => {
       const accountId = itemAccountId(item);
       const key = itemKey(item);
@@ -637,21 +813,23 @@
         : '<span class="paypal-protocol-link-empty">-</span>';
       const checked = state.selected.has(key) ? ' checked' : '';
       const disabled = key ? '' : ' disabled';
-      const payAllowed = canRunPayment(item);
+      const payAllowed = canRunPayment(item) && !routePending;
       const extractActionLabel = ['success', 'expired', 'failed'].includes(status) ? '重跑流水线' : '加入流水线';
       const paymentAttempts = numberFrom(item, ['payment_attempt', 'paypal_payment_attempt', 'payment_attempts', 'payment_retry_count'], 0);
       const billingCountry = valueFrom(item, ['payment_country', 'paypal_payment_country', 'billing_country']);
+      const recordRoute = itemRoute(item);
+      const recordRouteLabel = recordRoute === 'cdk_web' ? 'CDK 路线' : recordRoute === 'local' ? '本地路线' : '';
       return `<tr data-paypal-item-key="${html(key)}" data-paypal-bucket-row="${html(itemBucket(item))}">
         <td class="paypal-col-check" data-label="选择"><input type="checkbox" data-paypal-select="${html(key)}"${checked}${disabled}></td>
         <td data-label="账号" title="${html(itemEmail(item))}"><strong>${html(itemEmail(item) || ('#' + accountId))}</strong><div class="paypal-protocol-sub">代理：${html(proxySourceLabel(item))}</div>${billingCountry ? `<div class="paypal-protocol-sub">账单国家：${html(billingCountry)}</div>` : ''}${completed ? `<div class="paypal-protocol-sub">完成：${html(formatDate(completed))}</div>` : ''}</td>
-        <td data-label="流程状态"><div class="paypal-protocol-flow-status"><span><em>提链</em>${statusView(item)}</span><span><em>支付</em>${paymentStatusView(item)}</span></div><div class="paypal-protocol-sub">${html(itemType(item))}${paymentAttempts ? ` · 支付尝试 ${paymentAttempts} 次` : ''}</div>${extractMessage && status === 'failed' ? `<div class="paypal-protocol-error" title="${html(extractMessage)}">${html(extractMessage)}</div>` : ''}${paymentMessage ? `<div class="paypal-protocol-error" title="${html(paymentMessage)}">${html(paymentMessage)}</div>` : ''}</td>
+        <td data-label="流程状态"><div class="paypal-protocol-flow-status"><span><em>提链</em>${statusView(item)}</span><span><em>支付</em>${paymentStatusView(item)}</span></div><div class="paypal-protocol-sub">${recordRouteLabel ? `${html(recordRouteLabel)} · ` : ''}${html(itemType(item))}${paymentAttempts ? ` · 支付尝试 ${paymentAttempts} 次` : ''}</div>${extractMessage && status === 'failed' ? `<div class="paypal-protocol-error" title="${html(extractMessage)}">${html(extractMessage)}</div>` : ''}${paymentMessage ? `<div class="paypal-protocol-error" title="${html(paymentMessage)}">${html(paymentMessage)}</div>` : ''}</td>
         <td data-label="账号属性">${renderAttributes(item, index)}</td>
         <td data-label="支付链接 / 倒计时">${linkHtml}<div class="paypal-protocol-link-meta">${countdown}</div></td>
         <td class="paypal-col-actions" data-label="人工操作"><div class="paypal-protocol-row-actions">
           ${link && !expired ? `<button type="button" class="good" data-paypal-copy-index="${index}">复制链接</button>` : ''}
           ${qr && !expired && /^https?:\/\//i.test(qr) ? `<button type="button" data-paypal-qr-index="${index}">二维码</button>` : ''}
           ${payAllowed ? `<button type="button" class="primary" data-paypal-pay-index="${index}">${itemPaymentStatus(item) === 'failed' ? '重新支付' : '协议支付'}</button>` : ''}
-          <button type="button" data-paypal-extract="${html(accountId)}"${extractBusy || !accountId ? ' disabled' : ''}>${extractActionLabel}</button>
+          <button type="button" data-paypal-extract="${html(accountId)}"${extractBusy || !accountId || routePending ? ' disabled' : ''}>${extractActionLabel}</button>
         </div>${renderIntervention(item, index)}</td>
       </tr>`;
     }).join('');
@@ -666,6 +844,7 @@
     const selection = selectedItems();
     const paid = selection.filter(isPaymentSuccess);
     const payable = selection.filter(canRunPayment);
+    const routePending = routeSelectionPending();
 
     const selectAll = byId('paypalSelectAll');
     if (selectAll) {
@@ -674,18 +853,20 @@
       selectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleKeys.length;
     }
     const hint = byId('paypalSelectedHint');
-    if (hint) hint.textContent = `已选 ${selection.length}${paid.length ? ` · 支付成功 ${paid.length}` : ''}${payable.length ? ` · 可支付 ${payable.length}` : ''}`;
+    if (hint) hint.textContent = routePending
+      ? '请先保存路线切换，再执行任务'
+      : `已选 ${selection.length}${paid.length ? ` · 支付成功 ${paid.length}` : ''}${payable.length ? ` · 可支付 ${payable.length}` : ''}`;
 
     const extractButton = byId('paypalExtractSelected');
     if (extractButton) {
       extractButton.hidden = state.bucket === 'payment_success';
-      extractButton.disabled = selection.length === 0;
+      extractButton.disabled = selection.length === 0 || routePending;
       extractButton.textContent = selection.length ? `重跑选中流水线 (${selection.length})` : '重跑选中流水线';
     }
     const payButton = byId('paypalPaySelected');
     if (payButton) {
       payButton.hidden = state.bucket !== 'extract_success_payment_failed';
-      payButton.disabled = payable.length === 0;
+      payButton.disabled = payable.length === 0 || routePending;
       payButton.textContent = payable.length ? `支付选中 (${payable.length})` : '支付选中';
     }
     const exportButton = byId('paypalExportDelivery');
@@ -721,8 +902,10 @@
   }
 
   async function loadSettings() {
+    const epoch = state.settingsEpoch;
     try {
       const payload = await requestJson('/api/paypal-protocol/settings');
+      if (epoch !== state.settingsEpoch) return;
       applySettings(payload);
     } catch (error) {
       const status = byId('paypalSettingsStatus');
@@ -818,6 +1001,7 @@
     renderShell();
     if (state.loading) return;
     state.loading = true;
+    const settingsEpoch = state.settingsEpoch;
     const body = byId('paypalProtocolBody');
     if (body && !state.items.length) body.innerHTML = '<tr><td colspan="6" class="paypal-protocol-empty">正在加载…</td></tr>';
     try {
@@ -836,7 +1020,7 @@
       state.total = numberFrom(payload, ['total', 'total_count'], state.items.length);
       if (payload.page) state.page = Math.max(1, Number(payload.page) || state.page);
       else if (payload.offset != null && payload.limit) state.page = Math.floor(Number(payload.offset) / Number(payload.limit)) + 1;
-      if (payload.settings) applySettings(payload.settings);
+      if (payload.settings && settingsEpoch === state.settingsEpoch) applySettings(payload.settings);
       state.queue = payload.queue || {};
       renderSummary(payload);
       renderRows();
@@ -851,22 +1035,39 @@
   }
 
   function settingBody(options = {}) {
+    const route = selectedRoute();
+    const cdkActive = route === 'cdk_web';
     const body = {
       auto_extract: Boolean(byId('paypalAutoExtract') && byId('paypalAutoExtract').checked),
-      // This page intentionally exposes one route only: AT + CDK are handed
-      // to the 1K50 workbench, which owns both extraction and payment.
-      auto_payment: false,
-      cdk_auto_payment: true,
-      cdk_web_enabled: true,
-      extract_backend: 'cdk_web',
-      cdk_web_base_url: String(byId('paypalCdkBaseUrl') && byId('paypalCdkBaseUrl').value || '').trim(),
-      cdk_country: String(byId('paypalCdkCountry') && byId('paypalCdkCountry').value || '').trim().toUpperCase(),
-      cdk_protocol_country: String(byId('paypalCdkProtocolCountry') && byId('paypalCdkProtocolCountry').value || '').trim().toUpperCase(),
-      cdk_retries: Math.max(0, Number(byId('paypalCdkRetries') && byId('paypalCdkRetries').value) || 0),
+      extract_backend: route,
+      cdk_web_enabled: cdkActive,
     };
-    const sensitive = [
-      ['cdk_sms_api_key', 'paypalCdkSmsApiKey'],
-    ];
+    const sensitive = [];
+    if (cdkActive) {
+      Object.assign(body, {
+        cdk_auto_payment: true,
+        cdk_web_base_url: String(byId('paypalCdkBaseUrl') && byId('paypalCdkBaseUrl').value || '').trim(),
+        cdk_country: String(byId('paypalCdkCountry') && byId('paypalCdkCountry').value || 'GB').trim().toUpperCase(),
+        cdk_protocol_country: String(byId('paypalCdkProtocolCountry') && byId('paypalCdkProtocolCountry').value || '').trim().toUpperCase(),
+        cdk_retries: Math.min(20, Math.max(0, Number(byId('paypalCdkRetries') && byId('paypalCdkRetries').value) || 0)),
+      });
+      sensitive.push(['cdk_sms_api_key', 'paypalCdkSmsApiKey']);
+    } else {
+      Object.assign(body, {
+        auto_payment: true,
+        service_autostart: true,
+        payment_country: String(byId('paypalPaymentCountry') && byId('paypalPaymentCountry').value || 'GB').trim().toUpperCase(),
+        sms_country: String(byId('paypalSmsCountry') && byId('paypalSmsCountry').value || '16').trim(),
+        sms_provider_ids: String(byId('paypalSmsProviderIds') && byId('paypalSmsProviderIds').value || '').trim(),
+        sms_timeout: Math.min(3600, Math.max(20, Number(byId('paypalSmsTimeout') && byId('paypalSmsTimeout').value) || 120)),
+        payment_retries: Math.min(20, Math.max(0, Number(byId('paypalPaymentRetries') && byId('paypalPaymentRetries').value) || 0)),
+      });
+      sensitive.push(
+        ['proxy', 'paypalDefaultProxy'],
+        ['payment_proxy', 'paypalPaymentProxy'],
+        ['sms_api_key', 'paypalSmsApiKey'],
+      );
+    }
     sensitive.forEach(([key, id]) => {
       if (state.settingsDirty.has(key) || options.clearSetting === key) body[key] = options.clearSetting === key ? '' : String(byId(id) && byId(id).value || '').trim();
     });
@@ -874,28 +1075,47 @@
   }
 
   async function saveSettings(options = {}) {
+    if (!state.settingsLoaded) {
+      notify('设置仍在读取，请稍后再保存');
+      return;
+    }
+    if (state.settingsSaving) return;
     const button = byId('paypalSaveSettings');
-    if (button) button.disabled = true;
+    const body = settingBody(options);
+    const bodyKeys = new Set(Object.keys(body));
+    const submittedDirty = Array.from(state.settingsDirty).filter((key) => key === 'route' || bodyKeys.has(key));
+    state.settingsSaving = true;
+    setSettingsControlsDisabled(true);
     try {
       const payload = await requestJson('/api/paypal-protocol/settings', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settingBody(options)),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
-      state.settingsDirty.clear();
+      state.settingsEpoch += 1;
+      submittedDirty.forEach((key) => state.settingsDirty.delete(key));
       applySettings(payload);
+      renderRows();
       notify(options.clearSetting ? '对应敏感设置已清除' : 'Paypal协议设置已保存');
     } catch (error) {
       notify('保存 Paypal协议设置失败：' + error.message);
     } finally {
-      if (button) button.disabled = false;
+      state.settingsSaving = false;
+      setSettingsControlsDisabled(!state.settingsLoaded);
+      if (button && !state.settingsLoaded) button.disabled = true;
     }
   }
 
   function runProxyValue() {
+    if (selectedRoute() !== 'local' || routeSelectionPending()) return '';
     return String(byId('paypalRunProxy') && byId('paypalRunProxy').value || '').trim();
   }
 
   function runPaymentProxyValue() {
+    if (selectedRoute() !== 'local' || routeSelectionPending()) return '';
     return String(byId('paypalRunPaymentProxy') && byId('paypalRunPaymentProxy').value || '').trim();
+  }
+
+  function selectedRouteLabel() {
+    return selectedRoute() === 'cdk_web' ? 'CDK 提链支付' : '本地提链支付';
   }
 
   function selectionPayload(items) {
@@ -907,17 +1127,19 @@
   async function extractOne(accountId, button) {
     if (!accountId) return;
     const proxy = runProxyValue();
+    const paymentProxy = runPaymentProxyValue();
     if (button) button.disabled = true;
     try {
       const body = { account_id: Number(accountId) || accountId };
       if (proxy) body.proxy = proxy;
+      if (paymentProxy) body.payment_proxy = paymentProxy;
       const payload = await requestJson('/api/paypal-protocol/extract', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
-      notify(payload.message || 'CDK 流水线任务已入队');
+      notify(payload.message || `${selectedRouteLabel()}流水线任务已入队`);
       await loadPaypalProtocol({ silent: true });
     } catch (error) {
-      notify('加入 CDK 流水线失败：' + error.message);
+      notify(`加入${selectedRouteLabel()}流水线失败：` + error.message);
       if (button) button.disabled = false;
     }
   }
@@ -927,10 +1149,12 @@
     const accountIds = selectionPayload(items).account_ids;
     if (!accountIds.length) return;
     const proxy = runProxyValue();
+    const paymentProxy = runPaymentProxyValue();
     if (button) button.disabled = true;
     try {
       const body = { account_ids: accountIds };
       if (proxy) body.proxy = proxy;
+      if (paymentProxy) body.payment_proxy = paymentProxy;
       const payload = await requestJson('/api/paypal-protocol/extract-bulk', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
@@ -940,7 +1164,7 @@
       state.selected.clear();
       await loadPaypalProtocol({ silent: true });
     } catch (error) {
-      notify('批量加入 CDK 流水线失败：' + error.message);
+      notify(`批量加入${selectedRouteLabel()}流水线失败：` + error.message);
     } finally {
       renderSelection();
     }
@@ -1004,7 +1228,7 @@
       });
       const accepted = numberFrom(payload, ['accepted_count', 'started_count', 'queued_count'], payable.length);
       const failed = numberFrom(payload, ['failed_count', 'skipped_count'], 0);
-      notify(`协议支付已入队 ${accepted} 个${failed ? `，跳过/失败 ${failed} 个` : ''}`);
+      notify(`${selectedRouteLabel()}已入队 ${accepted} 个${failed ? `，跳过/失败 ${failed} 个` : ''}`);
       state.selected.clear();
       await loadPaypalProtocol({ silent: true });
     } catch (error) {
@@ -1153,7 +1377,9 @@
     const mapping = {
       paypalAutoExtract: 'auto_extract', paypalCdkBaseUrl: 'cdk_web_base_url',
       paypalCdkCountry: 'cdk_country', paypalCdkProtocolCountry: 'cdk_protocol_country', paypalCdkRetries: 'cdk_retries',
-      paypalCdkSmsApiKey: 'cdk_sms_api_key',
+      paypalCdkSmsApiKey: 'cdk_sms_api_key', paypalDefaultProxy: 'proxy', paypalPaymentCountry: 'payment_country',
+      paypalPaymentProxy: 'payment_proxy', paypalSmsCountry: 'sms_country', paypalSmsProviderIds: 'sms_provider_ids',
+      paypalSmsApiKey: 'sms_api_key', paypalSmsTimeout: 'sms_timeout', paypalPaymentRetries: 'payment_retries',
     };
     const key = mapping[element.id];
     if (key) state.settingsDirty.add(key);
@@ -1181,13 +1407,26 @@
     const refresh = byId('paypalRefresh');
     if (refresh) refresh.addEventListener('click', () => loadPaypalProtocol());
 
-    ['paypalAutoExtract', 'paypalCdkBaseUrl', 'paypalCdkCountry', 'paypalCdkProtocolCountry', 'paypalCdkRetries', 'paypalCdkSmsApiKey'].forEach((id) => {
+    ['paypalAutoExtract', 'paypalCdkBaseUrl', 'paypalCdkCountry', 'paypalCdkProtocolCountry', 'paypalCdkRetries', 'paypalCdkSmsApiKey', 'paypalDefaultProxy', 'paypalPaymentCountry', 'paypalPaymentProxy', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey', 'paypalSmsTimeout', 'paypalPaymentRetries'].forEach((id) => {
       const input = byId(id);
       if (!input) return;
       input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => {
         markSettingDirty(input);
         const settingsStatus = byId('paypalSettingsStatus');
         if (settingsStatus) settingsStatus.textContent = '有未保存的设置。';
+      });
+    });
+    document.querySelectorAll('input[name="paypalRoute"]').forEach((input) => {
+      input.addEventListener('change', () => {
+        if (!input.checked) return;
+        if (input.value === routeFromSettings(state.settings)) state.settingsDirty.delete('route');
+        else state.settingsDirty.add('route');
+        syncRouteUi(input.value);
+        renderRows();
+        const settingsStatus = byId('paypalSettingsStatus');
+        if (settingsStatus) settingsStatus.textContent = state.settingsDirty.has('route')
+          ? '路线已选择，保存后对新任务生效。'
+          : (state.settingsDirty.size ? '仍有未保存的路线参数；切换到对应路线可继续保存。' : '已回到当前生效路线。');
       });
     });
     const save = byId('paypalSaveSettings');
@@ -1293,7 +1532,10 @@
       }
       const clearSetting = target.closest('[data-paypal-clear-setting]');
       if (clearSetting) {
-        const mapping = { cdk_sms_api_key: 'paypalCdkSmsApiKey' };
+        const mapping = {
+          cdk_sms_api_key: 'paypalCdkSmsApiKey', proxy: 'paypalDefaultProxy',
+          payment_proxy: 'paypalPaymentProxy', sms_api_key: 'paypalSmsApiKey',
+        };
         const key = clearSetting.dataset.paypalClearSetting;
         const input = byId(mapping[key]);
         if (input) input.value = '';

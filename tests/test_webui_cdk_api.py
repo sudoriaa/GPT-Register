@@ -49,14 +49,13 @@ def test_cdk_pool_routes_mask_codes_and_support_reset(tmp_path: Path):
         assert reset.get_json()["reset_count"] == 1
 
 
-def test_cdk_settings_validate_country_and_map_fixed_pipeline():
+def test_cdk_settings_validate_country_and_map_cdk_pipeline_without_local_fields():
     client = _client()
     with patch("webui.app.config_editor.update_config", return_value={"updated": []}) as update, patch("config.reload_all", return_value=[]):
         response = client.post(
             "/api/paypal-protocol/settings",
             json={
                 "auto_extract": True,
-                "auto_payment": False,
                 "cdk_auto_payment": True,
                 "cdk_web_enabled": True,
                 "extract_backend": "cdk_web",
@@ -68,16 +67,58 @@ def test_cdk_settings_validate_country_and_map_fixed_pipeline():
     assert response.status_code == 200
     values = update.call_args.args[0]
     assert values["EXTRACT_LINK_AUTO"] is True
-    assert values["PAYPAL_PAYMENT_AUTO"] is False
     assert values["CDK_WEB_AUTO_PAYMENT"] is True
     assert values["CDK_WEB_ENABLED"] is True
     assert values["EXTRACT_LINK_BACKEND"] == "cdk_web"
     assert values["CDK_WEB_COUNTRY"] == "US"
     assert values["CDK_WEB_PROTOCOL_COUNTRY"] == "GB"
     assert values["CDK_WEB_MAX_RETRIES"] == 3
+    assert "PAYPAL_PAYMENT_AUTO" not in values
+    assert "PAYPAL_PAYMENT_AUTOSTART_SERVICE" not in values
 
     invalid = client.post("/api/paypal-protocol/settings", json={"cdk_country": "USA"})
     assert invalid.status_code == 400
+
+
+def test_local_settings_map_complete_local_pipeline_without_cdk_payment_fields():
+    client = _client()
+    with patch("webui.app.config_editor.update_config", return_value={"updated": []}) as update, \
+         patch("config.reload_all", return_value=[]):
+        response = client.post(
+            "/api/paypal-protocol/settings",
+            json={
+                "auto_extract": True,
+                "auto_payment": True,
+                "service_autostart": True,
+                "cdk_web_enabled": False,
+                "extract_backend": "local",
+                "proxy": "http://extract-user:extract-pass@proxy.example:8080",
+                "payment_country": "gb",
+                "payment_proxy": "socks5://user:pass@proxy.example:1080",
+                "sms_country": "16",
+                "sms_provider_ids": "3170,4120",
+                "sms_api_key": "SMS-KEY-FIXTURE",
+                "sms_timeout": 180,
+                "payment_retries": 4,
+            },
+        )
+
+    assert response.status_code == 200
+    values = update.call_args.args[0]
+    assert values["EXTRACT_LINK_AUTO"] is True
+    assert values["EXTRACT_LINK_BACKEND"] == "local"
+    assert values["CDK_WEB_ENABLED"] is False
+    assert values["PAYPAL_PAYMENT_AUTO"] is True
+    assert values["PAYPAL_PAYMENT_AUTOSTART_SERVICE"] is True
+    assert values["EXTRACT_LINK_PROXY"] == "http://extract-user:extract-pass@proxy.example:8080"
+    assert values["PAYPAL_PAYMENT_COUNTRY"] == "GB"
+    assert values["PAYPAL_PAYMENT_PROXY"] == "socks5://user:pass@proxy.example:1080"
+    assert values["PAYPAL_PAYMENT_SMS_COUNTRY"] == "16"
+    assert values["PAYPAL_PAYMENT_SMS_PROVIDER_IDS"] == "3170,4120"
+    assert values["PAYPAL_PAYMENT_SMS_API_KEY"] == "SMS-KEY-FIXTURE"
+    assert values["PAYPAL_PAYMENT_SMS_TIMEOUT"] == 180
+    assert values["PAYPAL_PAYMENT_MAX_RETRIES"] == 4
+    assert "CDK_WEB_AUTO_PAYMENT" not in values
 
 
 def test_manual_cdk_intervention_returns_async_ack_without_task_payload():
