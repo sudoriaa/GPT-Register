@@ -14,6 +14,9 @@
 .paypal-protocol-card-head h2 { margin: 0; font-size: 15px; line-height: 1.4; }
 .paypal-protocol-card-head p { margin: 3px 0 0; color: var(--muted, #667085); font-size: 12px; }
 .paypal-protocol-card-body { padding: 15px 16px; }
+.paypal-protocol-route-banner { margin: 0 0 14px; padding: 9px 11px; border: 1px solid #cfd8e3; border-radius: 7px; background: #f7f9fc; color: var(--muted, #667085); font-size: 12px; line-height: 1.45; }
+.paypal-protocol-route-banner.is-cdk { border-color: #b8cff8; background: #eff5ff; color: #1d4ed8; }
+.paypal-protocol-page.is-cdk-route [data-paypal-local-control] { display: none; }
 .paypal-protocol-settings-section + .paypal-protocol-settings-section { margin-top: 18px; padding-top: 17px; border-top: 1px solid var(--line, #e7ecf2); }
 .paypal-protocol-settings-title { margin-bottom: 10px; color: var(--text, #172033); font-size: 13px; font-weight: 850; }
 .paypal-protocol-settings-grid { display: grid; grid-template-columns: repeat(4, minmax(155px, 1fr)); gap: 14px; align-items: end; }

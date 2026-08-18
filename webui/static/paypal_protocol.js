@@ -424,6 +424,7 @@
             <div><h2>自动化与接码设置</h2><p>支付代理留空时沿用账号注册代理；SMSBower 服务固定为 PayPal，接码和支付失败都按重接次数重新执行。</p></div>
           </div>
           <div class="paypal-protocol-card-body">
+            <div class="paypal-protocol-route-banner" id="paypalRouteBanner" aria-live="polite">正在读取当前提链支付路线…</div>
             <div class="paypal-protocol-settings-section">
               <div class="paypal-protocol-settings-title">1K50 CDK 网页提链</div>
               <div class="paypal-protocol-settings-grid is-extract">
@@ -455,7 +456,7 @@
                   <label class="paypal-protocol-toggle"><input type="checkbox" id="paypalAutoExtract"> Plus 试用资格确认后自动提链</label>
                   <small>重复检测由队列自动去重。</small>
                 </div>
-                <label class="paypal-protocol-field" for="paypalDefaultProxy">
+                <label class="paypal-protocol-field" for="paypalDefaultProxy" data-paypal-local-control>
                   <span>全局提链代理（选填）</span>
                   <span class="paypal-protocol-proxy-wrap">
                     <input type="password" id="paypalDefaultProxy" autocomplete="new-password" spellcheck="false" placeholder="留空则使用注册代理">
@@ -468,19 +469,19 @@
             </div>
 
             <div class="paypal-protocol-settings-section">
-              <div class="paypal-protocol-settings-title">协议支付</div>
+              <div class="paypal-protocol-settings-title" id="paypalPaymentSettingsTitle">协议支付</div>
               <div class="paypal-protocol-settings-grid">
                 <div class="paypal-protocol-field">
-                  <span>自动协议支付</span>
-                  <label class="paypal-protocol-toggle"><input type="checkbox" id="paypalAutoPayment"> 提链成功后自动进入支付</label>
-                  <small>关闭后仍可在记录区手动补支付。</small>
+                  <span id="paypalAutoPaymentTitle">自动协议支付</span>
+                  <label class="paypal-protocol-toggle"><input type="checkbox" id="paypalAutoPayment"> <span id="paypalAutoPaymentToggleText">提链成功后自动进入支付</span></label>
+                  <small id="paypalAutoPaymentHint">关闭后仍可在记录区手动补支付。</small>
                 </div>
-                <label class="paypal-protocol-field" for="paypalPaymentCountry">
+                <label class="paypal-protocol-field" for="paypalPaymentCountry" data-paypal-local-control>
                   <span>账单国家</span>
                   <input type="text" id="paypalPaymentCountry" maxlength="32" autocomplete="off" placeholder="例如 US、GB">
                   <small>统一用于生成该国家的账单资料。</small>
                 </label>
-                <label class="paypal-protocol-field" for="paypalPaymentProxy">
+                <label class="paypal-protocol-field" for="paypalPaymentProxy" data-paypal-local-control>
                   <span>全局支付代理（选填）</span>
                   <span class="paypal-protocol-proxy-wrap">
                     <input type="password" id="paypalPaymentProxy" autocomplete="new-password" spellcheck="false" placeholder="留空则使用注册代理">
@@ -489,17 +490,17 @@
                   </span>
                   <small>仅覆盖支付阶段代理。</small>
                 </label>
-                <label class="paypal-protocol-field" for="paypalSmsCountry">
+                <label class="paypal-protocol-field" for="paypalSmsCountry" data-paypal-local-control>
                   <span>SMSBower 接码国家</span>
                   <input type="text" id="paypalSmsCountry" maxlength="32" autocomplete="off" placeholder="例如 US、GB 或平台国家代码">
                   <small>接码服务固定为 PayPal。</small>
                 </label>
-                <label class="paypal-protocol-field" for="paypalSmsProviderIds">
+                <label class="paypal-protocol-field" for="paypalSmsProviderIds" data-paypal-local-control>
                   <span>渠道号</span>
                   <input type="text" id="paypalSmsProviderIds" autocomplete="off" spellcheck="false" placeholder="多个渠道用逗号分隔">
                   <small>按填写顺序选择渠道。</small>
                 </label>
-                <label class="paypal-protocol-field" for="paypalSmsApiKey">
+                <label class="paypal-protocol-field" for="paypalSmsApiKey" data-paypal-local-control>
                   <span>SMSBower API Key</span>
                   <span class="paypal-protocol-proxy-wrap">
                     <input type="password" id="paypalSmsApiKey" autocomplete="new-password" spellcheck="false" placeholder="填写 API Key">
@@ -508,12 +509,12 @@
                   </span>
                   <small>已保存的 Key 不会在页面回显。</small>
                 </label>
-                <label class="paypal-protocol-field" for="paypalSmsTimeout">
+                <label class="paypal-protocol-field" for="paypalSmsTimeout" data-paypal-local-control>
                   <span>接码超时（秒）</span>
                   <input type="number" id="paypalSmsTimeout" min="20" max="3600" step="1" value="180">
                   <small>单次手机号等待验证码的最长时间。</small>
                 </label>
-                <label class="paypal-protocol-field" for="paypalPaymentRetries">
+                <label class="paypal-protocol-field" for="paypalPaymentRetries" data-paypal-local-control>
                   <span>失败重接次数</span>
                   <input type="number" id="paypalPaymentRetries" min="0" max="20" step="1" value="2">
                   <small>没收到码或付款失败都会消耗一次。</small>
@@ -587,6 +588,47 @@
     input.placeholder = configured ? `已配置${masked ? '：' + masked : ''}；留空不会覆盖` : emptyPlaceholder;
   }
 
+  function cdkRouteActive(settings) {
+    const route = String(valueFrom(settings, ['active_route', 'backend', 'extract_backend']) || '').trim().toLowerCase();
+    if (route) return route === 'cdk_web' || route === 'cdk' || route === '1k50';
+    return booleanFrom(settings, ['cdk_mode_active', 'cdk_web_enabled', 'cdk_enabled'], false);
+  }
+
+  function syncRouteUi(settings) {
+    const cdkActive = cdkRouteActive(settings || state.settings);
+    const page = byId('tab-paypal-protocol');
+    if (page) page.classList.toggle('is-cdk-route', cdkActive);
+
+    document.querySelectorAll('[data-paypal-local-control]').forEach((field) => {
+      field.hidden = cdkActive;
+      field.setAttribute('aria-hidden', cdkActive ? 'true' : 'false');
+      field.querySelectorAll('input, select, button, textarea').forEach((control) => {
+        control.disabled = cdkActive;
+      });
+    });
+
+    const title = byId('paypalPaymentSettingsTitle');
+    const autoTitle = byId('paypalAutoPaymentTitle');
+    const autoToggleText = byId('paypalAutoPaymentToggleText');
+    const autoHint = byId('paypalAutoPaymentHint');
+    if (title) title.textContent = cdkActive ? 'CDK 协议支付' : '协议支付';
+    if (autoTitle) autoTitle.textContent = cdkActive ? 'CDK 自动协议支付' : '自动协议支付';
+    if (autoToggleText) autoToggleText.textContent = cdkActive ? 'CDK 提链成功后自动继续协议支付' : '提链成功后自动进入支付';
+    if (autoHint) autoHint.textContent = cdkActive
+      ? 'CDK 模式只使用上方的 CDK 国家、接码和代理设置；本地支付路线已停用。'
+      : '关闭后仍可在记录区手动补支付。';
+
+    const banner = byId('paypalRouteBanner');
+    if (banner) {
+      const configured = String(valueFrom(settings, ['configured_backend']) || '').toLowerCase();
+      const message = String(valueFrom(settings, ['mode_message']) || '').trim();
+      banner.classList.toggle('is-cdk', cdkActive);
+      banner.textContent = cdkActive
+        ? (message || '当前为 CDK 路线：资格检测通过后进入 CDK 提链，并在成功后继续 CDK 协议支付。本地路线已互斥停用。')
+        : (message || `当前为 ${configured || 'local'} 路线：启用 CDK 后会自动切换为 CDK 提链支付路线。`);
+    }
+  }
+
   function applySettings(payload) {
     const settings = payload && payload.settings ? payload.settings : (payload || {});
     state.settings = settings;
@@ -628,13 +670,22 @@
     const smsKeyConfigured = booleanFrom(settings, ['sms_api_key_configured', 'has_sms_api_key', 'smsbower_api_key_configured'], false);
     applyMaskedSetting('paypalSmsApiKey', 'sms_api_key', smsKeyConfigured, valueFrom(settings, ['sms_api_key_masked', 'smsbower_api_key_masked']), '填写 SMSBower API Key');
 
+    syncRouteUi(settings);
+
     const status = byId('paypalSettingsStatus');
     if (status) {
+      const activeCdk = cdkRouteActive(settings);
       const autoText = autoPayment && autoPayment.checked ? '自动支付已开启' : '自动支付已关闭';
-      const proxyText = paymentProxyConfigured ? '支付使用全局自定义代理' : '支付默认沿用注册代理';
-      const smsText = smsKeyConfigured ? 'SMSBower Key 已配置' : 'SMSBower Key 未配置';
-      const cdkText = cdkEnabled && cdkEnabled.checked ? `CDK网页已开启（可用 ${numberFrom(settings, ['cdk_pool_available'], 0)} 条）` : 'CDK网页未开启';
-      status.textContent = `${autoText}；${proxyText}；${smsText}；${cdkText}。`;
+      const proxyText = activeCdk
+        ? (cdkProxyConfigured ? 'CDK 使用全局自定义代理' : 'CDK 默认沿用注册代理')
+        : (paymentProxyConfigured ? '本地支付使用全局自定义代理' : '本地支付默认沿用注册代理');
+      const smsText = activeCdk
+        ? (cdkSmsConfigured ? 'CDK 接码 Key 已配置' : 'CDK 接码使用 server-auto')
+        : (smsKeyConfigured ? 'SMSBower Key 已配置' : 'SMSBower Key 未配置');
+      const routeText = activeCdk
+        ? `CDK 路线已开启（可用 ${numberFrom(settings, ['cdk_pool_available'], 0)} 条）`
+        : '本地路线已开启';
+      status.textContent = `${autoText}；${proxyText}；${smsText}；${routeText}。`;
     }
   }
 
@@ -899,31 +950,40 @@
   }
 
   function settingBody(options = {}) {
+    const cdkOn = Boolean(byId('paypalCdkEnabled') && byId('paypalCdkEnabled').checked);
+    const autoPayment = Boolean(byId('paypalAutoPayment') && byId('paypalAutoPayment').checked);
     const body = {
       auto_extract: Boolean(byId('paypalAutoExtract') && byId('paypalAutoExtract').checked),
-      auto_payment: Boolean(byId('paypalAutoPayment') && byId('paypalAutoPayment').checked),
-      cdk_auto_payment: Boolean(byId('paypalAutoPayment') && byId('paypalAutoPayment').checked),
-      cdk_web_enabled: Boolean(byId('paypalCdkEnabled') && byId('paypalCdkEnabled').checked),
+      // CDK and local payment queues are distinct routes.  Keep the local
+      // auto trigger off while CDK owns the successful-extraction handoff.
+      auto_payment: cdkOn ? false : autoPayment,
+      cdk_auto_payment: autoPayment,
+      cdk_web_enabled: cdkOn,
       cdk_web_base_url: String(byId('paypalCdkBaseUrl') && byId('paypalCdkBaseUrl').value || '').trim(),
       cdk_country: String(byId('paypalCdkCountry') && byId('paypalCdkCountry').value || '').trim().toUpperCase(),
       cdk_protocol_country: String(byId('paypalCdkProtocolCountry') && byId('paypalCdkProtocolCountry').value || '').trim().toUpperCase(),
       cdk_retries: Math.max(0, Number(byId('paypalCdkRetries') && byId('paypalCdkRetries').value) || 0),
-      payment_country: String(byId('paypalPaymentCountry') && byId('paypalPaymentCountry').value || '').trim().toUpperCase(),
-      sms_country: String(byId('paypalSmsCountry') && byId('paypalSmsCountry').value || '').trim(),
-      sms_provider_ids: String(byId('paypalSmsProviderIds') && byId('paypalSmsProviderIds').value || '').trim(),
-      sms_timeout: Math.max(20, Number(byId('paypalSmsTimeout') && byId('paypalSmsTimeout').value) || 180),
-      payment_retries: Math.max(0, Number(byId('paypalPaymentRetries') && byId('paypalPaymentRetries').value) || 0),
     };
-    const cdkOn = Boolean(byId('paypalCdkEnabled') && byId('paypalCdkEnabled').checked);
+    if (!cdkOn) {
+      Object.assign(body, {
+        payment_country: String(byId('paypalPaymentCountry') && byId('paypalPaymentCountry').value || '').trim().toUpperCase(),
+        sms_country: String(byId('paypalSmsCountry') && byId('paypalSmsCountry').value || '').trim(),
+        sms_provider_ids: String(byId('paypalSmsProviderIds') && byId('paypalSmsProviderIds').value || '').trim(),
+        sms_timeout: Math.max(20, Number(byId('paypalSmsTimeout') && byId('paypalSmsTimeout').value) || 180),
+        payment_retries: Math.max(0, Number(byId('paypalPaymentRetries') && byId('paypalPaymentRetries').value) || 0),
+      });
+    }
     if (cdkOn) body.extract_backend = 'cdk_web';
     else if (String(state.settings.backend || '').toLowerCase() === 'cdk_web') body.extract_backend = 'local';
     const sensitive = [
-      ['proxy', 'paypalDefaultProxy'],
-      ['payment_proxy', 'paypalPaymentProxy'],
-      ['sms_api_key', 'paypalSmsApiKey'],
       ['cdk_web_proxy', 'paypalCdkProxy'],
       ['cdk_sms_api_key', 'paypalCdkSmsApiKey'],
     ];
+    if (!cdkOn) sensitive.unshift(
+      ['proxy', 'paypalDefaultProxy'],
+      ['payment_proxy', 'paypalPaymentProxy'],
+      ['sms_api_key', 'paypalSmsApiKey'],
+    );
     sensitive.forEach(([key, id]) => {
       if (state.settingsDirty.has(key) || options.clearSetting === key) body[key] = options.clearSetting === key ? '' : String(byId(id) && byId(id).value || '').trim();
     });
@@ -1244,7 +1304,12 @@
     ['paypalAutoExtract', 'paypalAutoPayment', 'paypalCdkEnabled', 'paypalCdkBaseUrl', 'paypalCdkCountry', 'paypalCdkProtocolCountry', 'paypalCdkRetries', 'paypalCdkProxy', 'paypalCdkSmsApiKey', 'paypalPaymentCountry', 'paypalDefaultProxy', 'paypalPaymentProxy', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey', 'paypalSmsTimeout', 'paypalPaymentRetries'].forEach((id) => {
       const input = byId(id);
       if (!input) return;
-      input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => markSettingDirty(input));
+      input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => {
+        markSettingDirty(input);
+        if (input.id === 'paypalCdkEnabled') {
+          syncRouteUi({ ...state.settings, cdk_web_enabled: input.checked, active_route: input.checked ? 'cdk_web' : 'local' });
+        }
+      });
     });
     const save = byId('paypalSaveSettings');
     if (save) save.addEventListener('click', () => saveSettings());

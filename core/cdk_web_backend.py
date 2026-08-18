@@ -62,8 +62,30 @@ def public_settings() -> dict:
     for row in rows:
         status = str(row.get("status") or "available")
         counts[status] = counts.get(status, 0) + 1
+    # Keep the CDK page's own settings response explicit about the effective
+    # route.  `CDK_WEB_ENABLED` is paired with EXTRACT_LINK_BACKEND by the
+    # settings writer, while this runtime resolver also protects old/manual
+    # environment files that contain a conflicting pair.
+    try:
+        from core import extract_link_service
+        mode = extract_link_service.mode_state()
+    except Exception:
+        mode = {
+            "backend": "cdk_web" if enabled() else "local",
+            "configured_backend": "cdk_web" if enabled() else "local",
+            "cdk_web_enabled": enabled(),
+            "active_route": "cdk_web" if enabled() else "local",
+            "cdk_mode_active": enabled(),
+            "local_mode_active": not enabled(),
+            "remote_mode_active": False,
+            "routes_mutually_exclusive": True,
+            "mode_forced": False,
+            "mode_message": "CDK 网页模式状态读取中",
+        }
     return {
+        **mode,
         "cdk_web_enabled": enabled(),
+        "cdk_web_active": bool(mode.get("backend") == "cdk_web" and enabled()),
         "cdk_web_base_url": str(_setting("CDK_WEB_BASE_URL", DEFAULT_BASE_URL) or DEFAULT_BASE_URL).rstrip("/"),
         "cdk_web_password_configured": bool(str(_setting("CDK_WEB_WORKBENCH_PASSWORD", "") or "").strip()),
         "cdk_web_country": str(_setting("CDK_WEB_COUNTRY", "GB") or "GB").upper(),
@@ -521,6 +543,14 @@ def _session_from_account(account: dict) -> tuple[str, dict[str, str]]:
 
 
 def enqueue_payment(*, account_id: int, trigger: str = "manual", proxy: str | None = None, country: str | None = None) -> dict:
+    if not enabled():
+        return {"accepted": False, "busy": False, "error": "CDK 网页模式已关闭"}
+    try:
+        from core import extract_link_service
+        if extract_link_service.backend_name() != "cdk_web":
+            return {"accepted": False, "busy": False, "error": "当前生效路线不是 CDK 网页模式"}
+    except Exception as exc:
+        return {"accepted": False, "busy": False, "error": f"CDK 模式配置无效: {type(exc).__name__}"}
     account = db.get_account(int(account_id)) or {}
     if not account:
         return {"accepted": False, "busy": False, "error": "账号不存在"}

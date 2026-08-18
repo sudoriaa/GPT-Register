@@ -59,12 +59,22 @@ def _bool_setting(name: str, default: bool = False) -> bool:
 
 
 def backend_name() -> str:
-    value = str(_runtime_setting("EXTRACT_LINK_BACKEND", "local") or "local").strip().lower()
-    if value in {"cdk", "1k50", "web", "cdk-web"}:
-        value = "cdk_web"
-    if value not in {"local", "remote", "cdk_web"}:
-        raise ValueError("EXTRACT_LINK_BACKEND 仅支持 local / remote / cdk_web")
-    return value
+    """Return the single effective extraction route.
+
+    CDK_WEB_ENABLED is intentionally the master mode switch.  This handles
+    old/manual `.env` combinations too, not just values written through the
+    WebUI: when CDK is enabled it always wins over local/remote, and a stale
+    disabled `cdk_web` setting deterministically falls back to local.
+    """
+    return str(mode_state()["backend"])
+
+
+def mode_state() -> dict:
+    """Expose the resolved, mutually-exclusive route without secrets."""
+    return cfg.resolve_backend_mode(
+        _runtime_setting("EXTRACT_LINK_BACKEND", "local"),
+        _bool_setting("CDK_WEB_ENABLED", False),
+    )
 
 
 def auto_extract_enabled() -> bool:
@@ -104,10 +114,11 @@ def _cdk(value: str | None = None) -> str:
 
 def public_settings() -> dict:
     """返回前端可展示的提链设置，绝不返回代理认证或 CDK。"""
-    backend = backend_name()
+    mode = mode_state()
+    backend = str(mode["backend"])
     proxy_setting_name = "CDK_WEB_PROXY" if backend == "cdk_web" else "EXTRACT_LINK_PROXY"
     result = {
-        "backend": backend,
+        **mode,
         "auto_extract": auto_extract_enabled(),
         "custom_proxy_configured": bool(str(_runtime_setting(proxy_setting_name, "") or "").strip()),
         "country": str(_runtime_setting("EXTRACT_LINK_COUNTRY", "GB") or "GB").strip().upper(),

@@ -1119,6 +1119,12 @@
     .accounts-table-v2 .account-quick-actions button:hover:not(:disabled) {
       color: #fff; background: #377dff; border-color: #377dff;
     }
+    .accounts-table-v2 .account-quick-actions button.good {
+      color: #166534; background: #edf8f1; border-color: #b9dfc9;
+    }
+    .accounts-table-v2 .account-quick-actions button.good:hover:not(:disabled) {
+      color: #166534; background: #d8f3e0; border-color: #2f855a;
+    }
     .accounts-table-v2 .account-quick-actions button:disabled {
       color: #b9bec8; background: #f7f8fa; border-color: #e5e7eb;
       cursor: not-allowed;
@@ -2362,6 +2368,10 @@
           <label class="acc-v2-inline rt-workers" title="补跑 RT 的并发线程数">RT并发
             <input id="codexBulkWorkersV2" type="number" min="1" max="16" value="3" inputmode="numeric">
           </label>
+        </div>
+        <div class="acc-v2-btn-group">
+          <span class="acc-v2-btn-group-title">Paypal协议</span>
+          <button type="button" class="jobs-tb-btn jobs-tb-btn--good" id="btnAddSelectedToPaypalPipelineV2" disabled title="将选中账号加入提链支付流水线；系统会复核 Plus 试用资格和 AT。启用 CDK 模式时自动进入 CDK 提链→协议支付路线">加入提链支付流水线</button>
         </div>
         <div class="acc-v2-btn-group">
           <span class="acc-v2-btn-group-title">快捷复制</span>
@@ -3846,12 +3856,16 @@ function _extractLinkCell(r) {
 }
 function _extractLinkAction(r) {
   const s = r.extract_link_status || '';
-  if (['queued','running'].includes(s)) return `<button disabled title="${esc(r.extract_link_message || '提链任务执行中')}">提链中…</button>`;
+  if (['queued','running'].includes(s)) return `<button type="button" class="good" disabled title="${esc(r.extract_link_message || '提链支付流水线任务执行中')}">流水线中…</button>`;
   const plan = (r.current_plan_type || r.plan_type || '').toString().toLowerCase();
   const eligible = plan === 'free' && !!r.plus_trial_eligible;
   if (!eligible) return '';
   const failedReason = s === 'failed' ? (r.extract_link_error || r.extract_link_message || '') : '';
-  return `<button class="good" data-extract-link="${esc(r.id)}" title="${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为该 free(可Plus试用) 账号创建 Paypal协议提链任务')}">提链</button>`;
+  const retry = ['success', 'expired', 'failed'].includes(s);
+  const title = failedReason
+    ? `重新加入提链支付流水线；上次失败原因：${failedReason}`
+    : '将该 free(可Plus试用) 账号加入 Paypal 提链支付流水线；CDK 模式下自动走 CDK 提链→协议支付';
+  return `<button type="button" class="good" data-extract-link="${esc(r.id)}" title="${esc(title)}">${retry ? '重新入流水线' : '加入流水线'}</button>`;
 }
 function _codexAction(r) {
   const s = r.codex_status || '';
@@ -4114,6 +4128,7 @@ function renderAccounts() {
       <td class="col-time" title="${attrEsc(r.created_at || r.imported_at || '-')}">${esc(r.created_at || r.imported_at || '-')}</td>
       <td class="col-quick-actions">
         <div class="account-quick-actions">
+          ${_extractLinkAction(r)}
           <button type="button" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" ${r.has_access_token ? '' : 'disabled'} title="${r.has_access_token ? '复制这个账号的完整 AT' : '该账号没有 AT'}">复制AT</button>
           <button type="button" data-account-copy-secret="pickup_url" data-account-id="${esc(r.id)}" ${r.has_pickup_url ? '' : 'disabled'} title="${r.has_pickup_url ? '复制这个账号邮箱的取码 URL' : '该账号没有取码 URL'}">复制取码</button>
           <button type="button" data-account-copy-secret="registration_proxy" data-account-id="${esc(r.id)}" ${r.has_registration_proxy ? '' : 'disabled'} title="${r.has_registration_proxy ? '复制注册成功时实际使用的代理' : '该账号没有保存注册代理'}">复制代理</button>
@@ -4143,6 +4158,7 @@ function updateAccountSelectionUi(pageRows = null) {
   const v2Ids = [
     'btnCheckSelectedPlansV2', 'btnCancelSelectedSubscriptionsV2', 'btnCheckSelectedLiveV2', 'btnSetup2faV2',
     'btnRetrySelectedCodexV2', 'btnCopySelectedPickupV2', 'btnCopySelectedAtV2',
+    'btnAddSelectedToPaypalPipelineV2',
     'btnCopySelectedDeliveryV2', 'btnExportSelectedDeliveryV2',
     'btnCopySelectedFreeV2', 'btnExportSelectedFreeV2',
     'btnDeleteSelectedAccountsV2', 'btnClearAccountGroupV2',
@@ -4936,44 +4952,57 @@ async function checkOnePlan(id, btn) {
   }
 }
 
+function _extractPipelineRouteLabel(payload) {
+  const rows = Array.isArray(payload && payload.started) ? payload.started : [];
+  const routes = [payload && payload.backend, ...rows.map(item => item && item.backend)]
+    .map(value => String(value || '').trim().toLowerCase());
+  return routes.some(value => value === 'cdk_web' || value.includes('cdk'))
+    ? 'CDK 提链支付流水线'
+    : '提链支付流水线';
+}
+
 async function extractOneLink(id, btn) {
   const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
   if (!acc) { showToast('账号不存在'); return; }
   const plan = (acc.current_plan_type || acc.plan_type || '').toString().toLowerCase();
   if (plan !== 'free' || !acc.plus_trial_eligible) {
-    showToast('仅支持 free(可Plus试用) 账号提链');
+    showToast('仅支持 free(可Plus试用) 账号加入提链支付流水线');
     return;
   }
-   if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链会使用该账号 AT；代理按 Paypal协议页设置（本次覆盖 > 全局自定义 > 注册代理）。`)) return;
+  if (!confirm(`确定将该账号加入提链支付流水线吗？\n\n${acc.email || ('#' + id)}\n\n系统会使用该账号 AT，并按 Paypal协议页设置的唯一生效路线执行；CDK 模式会继续协议支付。`)) return;
   const old = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '提链中…';
+  btn.textContent = '加入中…';
   try {
-    await api('/api/accounts/extract-link', {
+    const payload = await api('/api/accounts/extract-link', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({account_id: id}),
     });
-    showToast('提链任务已入队');
-    await pollAccountPlanStatuses();
+    showToast(`${_extractPipelineRouteLabel(payload)}已入队`);
+    await reloadAccountsAfterBackgroundTask();
   } catch(err) {
-    showToast('提链失败: ' + err.message);
+    showToast('加入提链支付流水线失败: ' + err.message);
     btn.disabled = false;
     btn.textContent = old;
   }
 }
 
 async function extractSelectedLinks() {
-  const ids = Array.from(ACCOUNT_SELECTED);
+  const ids = Array.from(ACCOUNT_SELECTED).map(Number).filter(Number.isInteger);
   if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === Number(id))).filter(Boolean);
+  const selected = ids.map(id => ACCOUNTS.find(a => Number(a.id) === id)).filter(Boolean);
   const eligible = selected.filter(a => (a.current_plan_type || a.plan_type || '').toString().toLowerCase() === 'free' && !!a.plus_trial_eligible);
-  if (!eligible.length) { showToast('选中账号里没有 free(可Plus试用)'); return; }
-  if (!confirm(`确定批量提链 ${eligible.length} 个 free(可Plus试用) 账号吗？\n\n非可试用账号会自动跳过；代理按 Paypal协议页设置。`)) return;
-  const btn = $('#btnExtractSelectedLinksV2');
+  const unknown = ids.length - selected.length;
+  const eligibilityHint = eligible.length
+    ? `当前页已确认可试用 ${eligible.length} 个`
+    : '当前页尚未确认 Plus 试用资格';
+  if (!confirm(`确定将选中的 ${ids.length} 个账号加入提链支付流水线吗？\n\n${eligibilityHint}${unknown ? `；其他页/未加载 ${unknown} 个` : ''}\n服务端会再次复核 free(可Plus试用) 和 AT，不符合条件或正在执行的账号会自动跳过。CDK 模式下会继续协议支付。`)) return;
+  const btn = $('#btnAddSelectedToPaypalPipelineV2');
+  if (!btn) return;
   const old = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '提链中…';
+  btn.textContent = '加入中…';
   try {
     const r = await api('/api/accounts/extract-link-bulk', {
       method:'POST',
@@ -4981,10 +5010,12 @@ async function extractSelectedLinks() {
       body: JSON.stringify({account_ids: ids}),
     });
     const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
-    showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个` : `已入队 ${r.started_count || 0} 个`);
-    await pollAccountPlanStatuses();
+    const route = _extractPipelineRouteLabel(r);
+    showToast(skipped ? `${route}已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个` : `${route}已入队 ${r.started_count || 0} 个`);
+    ACCOUNT_SELECTED.clear();
+    await reloadAccountsAfterBackgroundTask();
   } catch(err) {
-    showToast('批量提链失败: ' + err.message);
+    showToast('批量加入提链支付流水线失败: ' + err.message);
     updateAccountSelectionUi();
   } finally {
     btn.textContent = old;
@@ -5768,6 +5799,7 @@ async function copySelectedAccountTokens() {
   bind('btnCheckSelectedPlansV2', checkSelectedPlans);
   bind('btnCancelSelectedSubscriptionsV2', cancelSelectedSubscriptions);
   bind('btnRetrySelectedCodexV2', retrySelectedCodex);
+  bind('btnAddSelectedToPaypalPipelineV2', extractSelectedLinks);
   bind('btnCopySelectedPickupV2', copySelectedPickupUrls);
   bind('btnCopySelectedAtV2', copySelectedAccessTokens);
   bind('btnCopySelectedDeliveryV2', copySelectedDeliveryLines);

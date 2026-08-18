@@ -11,6 +11,7 @@ ChatGPT 账号自动化注册工具。支持 **RoxyBrowser / CloakBrowser 指纹
 - **自动化完整链路**：自动收验证码 → 设置密码 → 填写姓名生日 → 绑定 2FA（TOTP）→ 拿 access/session token
 - **Codex OAuth**：注册后自动授权拿 refresh_token，落盘 `codex-邮箱-plan.json`
 - **套餐检测**：查套餐 / Plus 试用资格，一键清理「无试用 Free」账号
+- **Paypal协议 CDK 流水线**：试用资格确认后自动进入 CDK 提链与协议支付；CDK/本地路线互斥，账号列表支持单个或批量手动入队
 - **账号管理**：分组、批量导入导出、查活、密码重置、订阅取消
 - **FAST 模式**：压缩非必要等待（人工延迟/轮询步进），加速批量注册
 - **实时日志**：任务 SSE 实时日志，异常节点自动恢复

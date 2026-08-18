@@ -1187,10 +1187,63 @@ def _format_env_value(value, vtype: str) -> str:
     return "" if value is None else str(value)
 
 
+def _normalize_extract_mode_updates(updates: dict) -> tuple[dict, dict | None]:
+    """Pair the CDK master switch and extraction backend in every config API.
+
+    The Paypal协议 settings endpoint is not the only way `.env` can be
+    edited: the generic `/api/config` endpoint uses this same writer.  Keeping
+    the pairing here prevents a later generic save from reviving local/remote
+    alongside the CDK route.
+    """
+    values = dict(updates or {})
+    has_backend = "EXTRACT_LINK_BACKEND" in values
+    has_cdk = "CDK_WEB_ENABLED" in values
+    has_local_auto_payment = "PAYPAL_PAYMENT_AUTO" in values
+    has_local_service_autostart = "PAYPAL_PAYMENT_AUTOSTART_SERVICE" in values
+    if not has_backend and not has_cdk and not has_local_auto_payment and not has_local_service_autostart:
+        return values, None
+
+    from config import cdk_web as cdk_cfg
+    from config import extract_link as extract_cfg
+    from config.env_loader import load_env
+
+    load_env(override=True)
+    mode = extract_cfg.resolve_mode_update(
+        current_backend=getattr(extract_cfg, "EXTRACT_LINK_BACKEND", "local"),
+        current_cdk_web_enabled=getattr(cdk_cfg, "CDK_WEB_ENABLED", False),
+        requested_backend=values.get("EXTRACT_LINK_BACKEND") if has_backend else None,
+        requested_cdk_web_enabled=values.get("CDK_WEB_ENABLED") if has_cdk else None,
+    )
+    # Persist the paired switches whenever either was explicitly edited, or
+    # when this write encounters a stale hand-edited pair.  A payment-only
+    # update should not leave the route config contradictory.
+    if has_backend or has_cdk or mode.get("mode_forced"):
+        values["EXTRACT_LINK_BACKEND"] = mode["persisted_backend"]
+        values["CDK_WEB_ENABLED"] = mode["persisted_cdk_web_enabled"]
+    if mode.get("cdk_mode_active"):
+        # CDK uses cdk_web_backend._run_payment directly.  Persisting the
+        # local auto-payment switch or its service autostart at the same time
+        # leaves a second route armed, so shut both off atomically.
+        values["PAYPAL_PAYMENT_AUTO"] = False
+        values["PAYPAL_PAYMENT_AUTOSTART_SERVICE"] = False
+        mode["configuration_enforced"] = True
+        mode["local_payment_auto_forced_off"] = True
+        mode["local_payment_service_autostart_forced_off"] = True
+        mode["mode_message"] = (
+            f"{mode.get('mode_message') or 'CDK 模式已启用'}；"
+            "已关闭本地协议支付自动队列及服务自启动"
+        )
+    else:
+        mode["local_payment_auto_forced_off"] = False
+        mode["local_payment_service_autostart_forced_off"] = False
+    return values, mode
+
+
 def update_config(updates: dict) -> dict:
     """批量更新配置。所有 WebUI 可编辑项只写项目根 `.env`。"""
     from config.env_loader import write_env_values, load_env
 
+    updates, mode = _normalize_extract_mode_updates(updates)
     updated, ignored = [], []
     env_updates: dict[str, str] = {}
 
@@ -1207,4 +1260,4 @@ def update_config(updates: dict) -> dict:
     if env_updated:
         load_env(override=True)
 
-    return {"updated": updated, "ignored": ignored, "env_updated": env_updated}
+    return {"updated": updated, "ignored": ignored, "env_updated": env_updated, "mode": mode}

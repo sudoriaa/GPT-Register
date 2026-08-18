@@ -1922,6 +1922,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "ok": True,
             "page": max(1, int(offset // max(1, snapshot.get("limit") or 1) + 1)),
             "page_size": snapshot.get("limit"),
+            "mode": extract_link_service.mode_state(),
             "settings": {
                 **extract_link_service.public_settings(),
                 **paypal_payment_service.public_settings(),
@@ -1937,6 +1938,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         """读取 Paypal协议页设置；代理只返回是否已配置。"""
         return jsonify({
             "ok": True,
+            "mode": extract_link_service.mode_state(),
             "settings": {
                 **extract_link_service.public_settings(),
                 **paypal_payment_service.public_settings(),
@@ -2078,6 +2080,10 @@ def create_app(auth_code: str | None = None) -> Flask:
         return jsonify({
             "ok": True,
             "updated": result.get("updated", []),
+            # `config_editor` canonicalizes the paired CDK/backend values
+            # before persisting.  Return that decision explicitly so callers
+            # never have to infer which of two conflicting inputs won.
+            "mode": result.get("mode") or extract_link_service.mode_state(),
             "settings": {
                 **extract_link_service.public_settings(),
                 **paypal_payment_service.public_settings(),
@@ -3971,6 +3977,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "ok": True,
             "updated": result["updated"],
             "ignored": result["ignored"],
+            "mode": result.get("mode") or extract_link_service.mode_state(),
             "reloaded": reload_ok,
             "note": (
                 "✅ 已保存并热加载，新值立即生效"

@@ -69,7 +69,23 @@ def _bool_setting(name: str, default: bool = False) -> bool:
 
 
 def auto_payment_enabled() -> bool:
-    return _bool_setting("PAYPAL_PAYMENT_AUTO", False)
+    """Whether the *local* agreement-payment queue may auto-start.
+
+    CDK mode carries its payment forward through the same 1K50 visitor/task
+    in `cdk_web_backend`; letting this legacy local switch stay active would
+    arm a second payment route.  Keep this runtime guard in addition to the
+    paired config writer so hand-edited/stale .env files are safe as well.
+    """
+    configured = _bool_setting("PAYPAL_PAYMENT_AUTO", False)
+    try:
+        from core import extract_link_service
+        if extract_link_service.backend_name() == "cdk_web":
+            return False
+    except Exception:
+        # Configuration errors are surfaced by the caller that reads the
+        # extraction backend; retain historical local behaviour meanwhile.
+        pass
+    return configured
 
 
 def _country(value: str | None = None) -> str:
@@ -86,8 +102,17 @@ def _sms_api_key() -> str:
 def public_settings() -> dict:
     """只返回页面可展示的设置，不回显 API Key 或代理认证。"""
     project = Path(str(_runtime_setting("PAYPAL_PAYMENT_PROJECT_PATH", "") or "").strip()).expanduser()
+    configured_auto = _bool_setting("PAYPAL_PAYMENT_AUTO", False)
+    local_auto = auto_payment_enabled()
+    try:
+        from core import extract_link_service
+        cdk_mode_active = extract_link_service.backend_name() == "cdk_web"
+    except Exception:
+        cdk_mode_active = False
     return {
-        "auto_payment": auto_payment_enabled(),
+        "auto_payment": local_auto,
+        "local_auto_payment_configured": configured_auto,
+        "local_auto_payment_disabled_by_cdk": bool(cdk_mode_active and configured_auto),
         "payment_country": _country(),
         "payment_proxy_configured": bool(str(_runtime_setting("PAYPAL_PAYMENT_PROXY", "") or "").strip()),
         "sms_api_key_configured": bool(_sms_api_key()),
@@ -583,9 +608,20 @@ def enqueue_account_payment(
     account = db.get_account(int(account_id)) or {}
     if not account:
         return {"accepted": False, "busy": False, "error": "账号不存在"}
+    try:
+        from core import extract_link_service
+        cdk_mode_active = extract_link_service.backend_name() == "cdk_web"
+    except Exception:
+        cdk_mode_active = False
     # CDK 网页记录必须沿用同一条 1K50 task/visitor 链路；不要把它
     # 误送入本地 paypal-agreement-protocol 服务，避免重复创建协议任务。
     if str(account.get("extract_link_backend") or "").strip().lower() == "cdk_web":
+        if not cdk_mode_active:
+            return {
+                "accepted": False,
+                "busy": False,
+                "error": "该账号属于 CDK 网页提链记录，请先启用 CDK 网页模式",
+            }
         from core import cdk_web_backend
         return cdk_web_backend.enqueue_payment(
             account_id=int(account_id),
@@ -593,6 +629,12 @@ def enqueue_account_payment(
             proxy=proxy,
             country=country,
         )
+    if cdk_mode_active:
+        return {
+            "accepted": False,
+            "busy": False,
+            "error": "当前已启用 CDK 网页模式，本地协议支付路线已关闭",
+        }
     if str(account.get("extract_link_status") or "").strip().lower() != "success":
         return {"accepted": False, "busy": False, "error": "账号尚未提链成功"}
     if not db.account_extract_link_is_fresh(int(account_id)):
