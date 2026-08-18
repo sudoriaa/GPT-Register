@@ -325,12 +325,24 @@ def test_account_list_exposes_single_and_bulk_manual_pipeline_actions():
     assert "CDK 提链支付流水线" in template
 
 
-def test_paypal_page_hides_local_controls_while_cdk_route_is_active():
+def test_paypal_page_exposes_one_fixed_cdk_pipeline():
     script = (ROOT / "webui" / "static" / "paypal_protocol.js").read_text(encoding="utf-8")
     style = (ROOT / "webui" / "static" / "paypal_protocol.css").read_text(encoding="utf-8")
+    shell = script.split("function renderShell()", 1)[1].split("function setInputIfClean", 1)[0]
+    setting_body = script.split("function settingBody", 1)[1].split("async function saveSettings", 1)[0]
 
-    assert "function cdkRouteActive" in script
-    assert "function syncRouteUi" in script
-    assert "auto_payment: cdkOn ? false : autoPayment" in script
-    assert "data-paypal-local-control" in script
-    assert ".paypal-protocol-page.is-cdk-route [data-paypal-local-control]" in style
+    assert 'id="paypalCdkEnabled"' not in shell
+    assert 'id="paypalAutoPayment"' not in shell
+    assert shell.count('id="paypalAutoExtract"') == 1
+    assert "自动加入流水线" in shell
+    assert "当前路线：CDK 网页托管" in script
+    assert '<details class="paypal-protocol-disclosure" id="paypalCdkPoolDetails">' in shell
+    assert '<details class="paypal-protocol-disclosure" id="paypalAdvancedDetails">' in shell
+    assert "CDK 路线固定启用" in shell
+    assert "提链成功后继续支付" in shell
+    assert "cdk_web_enabled: true" in setting_body
+    assert "cdk_auto_payment: true" in setting_body
+    assert "auto_payment: false" in setting_body
+    assert "extract_backend: 'cdk_web'" in setting_body
+    assert ".paypal-protocol-page [hidden] { display: none !important; }" in style
+    assert "min-width: 1600px" not in style

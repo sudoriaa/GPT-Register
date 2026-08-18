@@ -49,15 +49,27 @@ def test_cdk_pool_routes_mask_codes_and_support_reset(tmp_path: Path):
         assert reset.get_json()["reset_count"] == 1
 
 
-def test_cdk_settings_validate_country_and_map_backend():
+def test_cdk_settings_validate_country_and_map_fixed_pipeline():
     client = _client()
     with patch("webui.app.config_editor.update_config", return_value={"updated": []}) as update, patch("config.reload_all", return_value=[]):
         response = client.post(
             "/api/paypal-protocol/settings",
-            json={"cdk_web_enabled": True, "cdk_country": "us", "cdk_protocol_country": "gb", "cdk_retries": 3},
+            json={
+                "auto_extract": True,
+                "auto_payment": False,
+                "cdk_auto_payment": True,
+                "cdk_web_enabled": True,
+                "extract_backend": "cdk_web",
+                "cdk_country": "us",
+                "cdk_protocol_country": "gb",
+                "cdk_retries": 3,
+            },
         )
     assert response.status_code == 200
     values = update.call_args.args[0]
+    assert values["EXTRACT_LINK_AUTO"] is True
+    assert values["PAYPAL_PAYMENT_AUTO"] is False
+    assert values["CDK_WEB_AUTO_PAYMENT"] is True
     assert values["CDK_WEB_ENABLED"] is True
     assert values["EXTRACT_LINK_BACKEND"] == "cdk_web"
     assert values["CDK_WEB_COUNTRY"] == "US"
