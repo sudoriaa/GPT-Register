@@ -22,6 +22,8 @@
     settings: {},
     settingsDirty: new Set(),
     queue: {},
+    cdkItems: [],
+    cdkSelected: new Set(),
   };
 
   const byId = (id) => document.getElementById(id);
@@ -369,6 +371,29 @@
           </div>
           <div class="paypal-protocol-card-body">
             <div class="paypal-protocol-settings-section">
+              <div class="paypal-protocol-settings-title">1K50 CDK 网页提链</div>
+              <div class="paypal-protocol-settings-grid is-extract">
+                <div class="paypal-protocol-field">
+                  <span>CDK 网页后端</span>
+                  <label class="paypal-protocol-toggle"><input type="checkbox" id="paypalCdkEnabled"> 启用并自动轮换 CDK</label>
+                  <small>开启后，提链按钮和 Plus 自动任务从 CDK 池取一条可用 CDK。</small>
+                </div>
+                <label class="paypal-protocol-field" for="paypalCdkBaseUrl"><span>网页地址</span><input type="url" id="paypalCdkBaseUrl" placeholder="https://www.1k50.xyz/pp-cdk-vak"><small>工作台地址可按部署修改。</small></label>
+                <label class="paypal-protocol-field" for="paypalCdkCountry"><span>CDK 账单国家</span><input type="text" id="paypalCdkCountry" maxlength="2" placeholder="GB"></label>
+                <label class="paypal-protocol-field" for="paypalCdkProtocolCountry"><span>协议国家</span><input type="text" id="paypalCdkProtocolCountry" maxlength="2" placeholder="GB"></label>
+                <label class="paypal-protocol-field" for="paypalCdkRetries"><span>CDK 失败轮换次数</span><input type="number" id="paypalCdkRetries" min="0" max="20" step="1" value="2"></label>
+                <label class="paypal-protocol-field" for="paypalCdkSmsApiKey"><span>CDK 接码 API Key（选填）</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalCdkSmsApiKey" autocomplete="new-password" placeholder="server-auto 可留空"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalCdkSmsApiKey">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="cdk_sms_api_key">清除</button></span></label>
+                <label class="paypal-protocol-field" for="paypalCdkProxy"><span>CDK 默认代理（选填）</span><span class="paypal-protocol-proxy-wrap"><input type="password" id="paypalCdkProxy" autocomplete="new-password" placeholder="留空使用注册代理"><button type="button" class="paypal-protocol-icon-btn" data-paypal-toggle-secret="paypalCdkProxy">显示</button><button type="button" class="paypal-protocol-icon-btn" data-paypal-clear-setting="cdk_web_proxy">清除</button></span></label>
+              </div>
+              <div class="paypal-protocol-cdk-toolbar">
+                <textarea id="paypalCdkCodes" rows="3" placeholder="一行一个 CDK；完整值只在导入请求中使用，不会回显"></textarea>
+                <div class="paypal-protocol-cdk-actions"><button type="button" class="btn" id="paypalCdkImport">追加导入</button><button type="button" class="btn" id="paypalCdkReplace">替换导入</button><button type="button" class="btn" id="paypalCdkRefresh">刷新 CDK 池</button><button type="button" class="btn danger" id="paypalCdkDelete">删除选中 CDK</button><button type="button" class="btn" id="paypalCdkReset">重置失败 CDK</button></div>
+                <div class="paypal-protocol-cdk-status" id="paypalCdkStatus">CDK 池正在读取…</div>
+                <div class="paypal-protocol-cdk-list" id="paypalCdkList"></div>
+              </div>
+            </div>
+
+            <div class="paypal-protocol-settings-section">
               <div class="paypal-protocol-settings-title">提链</div>
               <div class="paypal-protocol-settings-grid is-extract">
                 <div class="paypal-protocol-field">
@@ -515,7 +540,22 @@
     const autoExtract = byId('paypalAutoExtract');
     if (autoExtract && !state.settingsDirty.has('auto_extract')) autoExtract.checked = booleanFrom(settings, ['auto_extract', 'auto_extract_enabled', 'enabled'], false);
     const autoPayment = byId('paypalAutoPayment');
-    if (autoPayment && !state.settingsDirty.has('auto_payment')) autoPayment.checked = booleanFrom(settings, ['auto_payment', 'auto_payment_enabled', 'payment_enabled'], false);
+    const cdkEnabled = byId('paypalCdkEnabled');
+    if (cdkEnabled && !state.settingsDirty.has('cdk_web_enabled')) cdkEnabled.checked = booleanFrom(settings, ['cdk_web_enabled', 'cdk_enabled'], false);
+    if (autoPayment && !state.settingsDirty.has('auto_payment')) {
+      const activeCdk = cdkEnabled && cdkEnabled.checked;
+      autoPayment.checked = activeCdk
+        ? booleanFrom(settings, ['cdk_web_auto_payment', 'cdk_auto_payment', 'auto_payment'], true)
+        : booleanFrom(settings, ['auto_payment', 'auto_payment_enabled', 'payment_enabled'], false);
+    }
+    setInputIfClean('paypalCdkBaseUrl', 'cdk_web_base_url', valueFrom(settings, ['cdk_web_base_url', 'cdk_base_url']));
+    setInputIfClean('paypalCdkCountry', 'cdk_country', valueFrom(settings, ['cdk_web_country', 'cdk_country']) || 'GB');
+    setInputIfClean('paypalCdkProtocolCountry', 'cdk_protocol_country', valueFrom(settings, ['cdk_web_protocol_country', 'cdk_protocol_country']) || 'GB');
+    setInputIfClean('paypalCdkRetries', 'cdk_retries', valueFrom(settings, ['cdk_web_max_retries', 'cdk_retries']) || 2);
+    const cdkProxyConfigured = booleanFrom(settings, ['cdk_web_proxy_configured', 'cdk_proxy_configured'], false);
+    applyMaskedSetting('paypalCdkProxy', 'cdk_web_proxy', cdkProxyConfigured, '', '留空则使用注册代理');
+    const cdkSmsConfigured = booleanFrom(settings, ['cdk_web_sms_api_key_configured', 'cdk_sms_api_key_configured'], false);
+    applyMaskedSetting('paypalCdkSmsApiKey', 'cdk_sms_api_key', cdkSmsConfigured, '', 'server-auto 可留空');
 
     setInputIfClean('paypalPaymentCountry', 'payment_country', valueFrom(settings, ['payment_country', 'billing_country', 'extract_link_country']));
     setInputIfClean('paypalSmsCountry', 'sms_country', valueFrom(settings, ['sms_country', 'smsbower_country']));
@@ -539,7 +579,8 @@
       const autoText = autoPayment && autoPayment.checked ? '自动支付已开启' : '自动支付已关闭';
       const proxyText = paymentProxyConfigured ? '支付使用全局自定义代理' : '支付默认沿用注册代理';
       const smsText = smsKeyConfigured ? 'SMSBower Key 已配置' : 'SMSBower Key 未配置';
-      status.textContent = `${autoText}；${proxyText}；${smsText}。`;
+      const cdkText = cdkEnabled && cdkEnabled.checked ? `CDK网页已开启（可用 ${numberFrom(settings, ['cdk_pool_available'], 0)} 条）` : 'CDK网页未开启';
+      status.textContent = `${autoText}；${proxyText}；${smsText}；${cdkText}。`;
     }
   }
 
@@ -701,6 +742,72 @@
     }
   }
 
+  function renderCdkPool(payload) {
+    const items = Array.isArray(payload && payload.items) ? payload.items : [];
+    state.cdkItems = items;
+    state.cdkSelected = new Set(Array.from(state.cdkSelected).filter((id) => items.some((item) => String(item.id) === String(id))));
+    const mount = byId('paypalCdkList');
+    if (mount) {
+      mount.innerHTML = items.length ? items.map((item) => {
+        const id = String(item.id || '');
+        const checked = state.cdkSelected.has(id) ? ' checked' : '';
+        const status = String(item.status || 'available');
+        return `<label class="paypal-protocol-cdk-row"><input type="checkbox" data-paypal-cdk-select="${html(id)}"${checked}><span>${html(item.display_code || item.fingerprint || id)}</span><em>${html(status)}${item.remaining_uses != null ? ` · 剩余 ${html(item.remaining_uses)}` : ''}</em>${item.last_error ? `<small title="${html(item.last_error)}">${html(item.last_error)}</small>` : ''}</label>`;
+      }).join('') : '<div class="paypal-protocol-cdk-empty">CDK 池为空，请在上方粘贴多行 CDK 导入。</div>';
+    }
+    const status = byId('paypalCdkStatus');
+    if (status) status.textContent = `CDK 池共 ${numberFrom(payload, ['total'], items.length)} 条，可用 ${numberFrom(payload, ['available'], items.filter((item) => item.status === 'available').length)} 条`;
+  }
+
+  async function loadCdkPool(options = {}) {
+    try {
+      const payload = await requestJson('/api/paypal-protocol/cdk');
+      renderCdkPool(payload);
+      if (!options.silent) notify('CDK 池已刷新');
+    } catch (error) {
+      const status = byId('paypalCdkStatus');
+      if (status) status.textContent = 'CDK 池读取失败：' + error.message;
+    }
+  }
+
+  async function importCdk(replace) {
+    const input = byId('paypalCdkCodes');
+    const codes = String(input && input.value || '').trim();
+    if (!codes) return notify('请先填写 CDK');
+    try {
+      const payload = await requestJson('/api/paypal-protocol/cdk/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ codes, replace: Boolean(replace) }),
+      });
+      if (input) input.value = '';
+      notify(`CDK 已${replace ? '替换导入' : '追加导入'} ${numberFrom(payload, ['added'], 0)} 条`);
+      await loadCdkPool({ silent: true });
+    } catch (error) { notify('CDK 导入失败：' + error.message); }
+  }
+
+  async function deleteCdk() {
+    const ids = Array.from(state.cdkSelected);
+    if (!ids.length) return;
+    if (!root.confirm(`确定删除选中的 ${ids.length} 条 CDK 吗？`)) return;
+    try {
+      const payload = await requestJson('/api/paypal-protocol/cdk/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
+      });
+      state.cdkSelected.clear();
+      notify(`已删除 ${numberFrom(payload, ['deleted_count'], 0)} 条 CDK`);
+      await loadCdkPool({ silent: true });
+    } catch (error) { notify('CDK 删除失败：' + error.message); }
+  }
+
+  async function resetCdk() {
+    try {
+      const payload = await requestJson('/api/paypal-protocol/cdk/reset', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: Array.from(state.cdkSelected) }),
+      });
+      notify(`已重置 ${numberFrom(payload, ['reset_count'], 0)} 条 CDK`);
+      await loadCdkPool({ silent: true });
+    } catch (error) { notify('CDK 重置失败：' + error.message); }
+  }
+
   async function loadPaypalProtocol(options = {}) {
     renderShell();
     if (state.loading) return;
@@ -741,16 +848,27 @@
     const body = {
       auto_extract: Boolean(byId('paypalAutoExtract') && byId('paypalAutoExtract').checked),
       auto_payment: Boolean(byId('paypalAutoPayment') && byId('paypalAutoPayment').checked),
+      cdk_auto_payment: Boolean(byId('paypalAutoPayment') && byId('paypalAutoPayment').checked),
+      cdk_web_enabled: Boolean(byId('paypalCdkEnabled') && byId('paypalCdkEnabled').checked),
+      cdk_web_base_url: String(byId('paypalCdkBaseUrl') && byId('paypalCdkBaseUrl').value || '').trim(),
+      cdk_country: String(byId('paypalCdkCountry') && byId('paypalCdkCountry').value || '').trim().toUpperCase(),
+      cdk_protocol_country: String(byId('paypalCdkProtocolCountry') && byId('paypalCdkProtocolCountry').value || '').trim().toUpperCase(),
+      cdk_retries: Math.max(0, Number(byId('paypalCdkRetries') && byId('paypalCdkRetries').value) || 0),
       payment_country: String(byId('paypalPaymentCountry') && byId('paypalPaymentCountry').value || '').trim().toUpperCase(),
       sms_country: String(byId('paypalSmsCountry') && byId('paypalSmsCountry').value || '').trim(),
       sms_provider_ids: String(byId('paypalSmsProviderIds') && byId('paypalSmsProviderIds').value || '').trim(),
       sms_timeout: Math.max(20, Number(byId('paypalSmsTimeout') && byId('paypalSmsTimeout').value) || 180),
       payment_retries: Math.max(0, Number(byId('paypalPaymentRetries') && byId('paypalPaymentRetries').value) || 0),
     };
+    const cdkOn = Boolean(byId('paypalCdkEnabled') && byId('paypalCdkEnabled').checked);
+    if (cdkOn) body.extract_backend = 'cdk_web';
+    else if (String(state.settings.backend || '').toLowerCase() === 'cdk_web') body.extract_backend = 'local';
     const sensitive = [
       ['proxy', 'paypalDefaultProxy'],
       ['payment_proxy', 'paypalPaymentProxy'],
       ['sms_api_key', 'paypalSmsApiKey'],
+      ['cdk_web_proxy', 'paypalCdkProxy'],
+      ['cdk_sms_api_key', 'paypalCdkSmsApiKey'],
     ];
     sensitive.forEach(([key, id]) => {
       if (state.settingsDirty.has(key) || options.clearSetting === key) body[key] = options.clearSetting === key ? '' : String(byId(id) && byId(id).value || '').trim();
@@ -987,7 +1105,9 @@
       paypalAutoExtract: 'auto_extract', paypalAutoPayment: 'auto_payment', paypalPaymentCountry: 'payment_country',
       paypalDefaultProxy: 'proxy', paypalPaymentProxy: 'payment_proxy', paypalSmsCountry: 'sms_country',
       paypalSmsProviderIds: 'sms_provider_ids', paypalSmsApiKey: 'sms_api_key', paypalSmsTimeout: 'sms_timeout',
-      paypalPaymentRetries: 'payment_retries',
+      paypalPaymentRetries: 'payment_retries', paypalCdkEnabled: 'cdk_web_enabled', paypalCdkBaseUrl: 'cdk_web_base_url',
+      paypalCdkCountry: 'cdk_country', paypalCdkProtocolCountry: 'cdk_protocol_country', paypalCdkRetries: 'cdk_retries',
+      paypalCdkProxy: 'cdk_web_proxy', paypalCdkSmsApiKey: 'cdk_sms_api_key',
     };
     const key = mapping[element.id];
     if (key) state.settingsDirty.add(key);
@@ -1015,13 +1135,23 @@
     const refresh = byId('paypalRefresh');
     if (refresh) refresh.addEventListener('click', () => loadPaypalProtocol());
 
-    ['paypalAutoExtract', 'paypalAutoPayment', 'paypalPaymentCountry', 'paypalDefaultProxy', 'paypalPaymentProxy', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey', 'paypalSmsTimeout', 'paypalPaymentRetries'].forEach((id) => {
+    ['paypalAutoExtract', 'paypalAutoPayment', 'paypalCdkEnabled', 'paypalCdkBaseUrl', 'paypalCdkCountry', 'paypalCdkProtocolCountry', 'paypalCdkRetries', 'paypalCdkProxy', 'paypalCdkSmsApiKey', 'paypalPaymentCountry', 'paypalDefaultProxy', 'paypalPaymentProxy', 'paypalSmsCountry', 'paypalSmsProviderIds', 'paypalSmsApiKey', 'paypalSmsTimeout', 'paypalPaymentRetries'].forEach((id) => {
       const input = byId(id);
       if (!input) return;
       input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => markSettingDirty(input));
     });
     const save = byId('paypalSaveSettings');
     if (save) save.addEventListener('click', () => saveSettings());
+    const cdkImport = byId('paypalCdkImport');
+    if (cdkImport) cdkImport.addEventListener('click', () => importCdk(false));
+    const cdkReplace = byId('paypalCdkReplace');
+    if (cdkReplace) cdkReplace.addEventListener('click', () => importCdk(true));
+    const cdkRefresh = byId('paypalCdkRefresh');
+    if (cdkRefresh) cdkRefresh.addEventListener('click', () => loadCdkPool());
+    const cdkDelete = byId('paypalCdkDelete');
+    if (cdkDelete) cdkDelete.addEventListener('click', () => deleteCdk());
+    const cdkReset = byId('paypalCdkReset');
+    if (cdkReset) cdkReset.addEventListener('click', () => resetCdk());
 
     const all = byId('paypalSelectAll');
     if (all) all.addEventListener('change', () => {
@@ -1042,6 +1172,12 @@
     const mount = byId('tab-paypal-protocol');
     if (!mount) return;
     mount.addEventListener('change', (event) => {
+      const cdkCheckbox = event.target.closest('[data-paypal-cdk-select]');
+      if (cdkCheckbox) {
+        const id = cdkCheckbox.dataset.paypalCdkSelect;
+        cdkCheckbox.checked ? state.cdkSelected.add(id) : state.cdkSelected.delete(id);
+        return;
+      }
       const checkbox = event.target.closest('[data-paypal-select]');
       if (checkbox) {
         const key = checkbox.dataset.paypalSelect;
@@ -1084,7 +1220,7 @@
       }
       const clearSetting = target.closest('[data-paypal-clear-setting]');
       if (clearSetting) {
-        const mapping = { proxy: 'paypalDefaultProxy', payment_proxy: 'paypalPaymentProxy', sms_api_key: 'paypalSmsApiKey' };
+        const mapping = { proxy: 'paypalDefaultProxy', payment_proxy: 'paypalPaymentProxy', sms_api_key: 'paypalSmsApiKey', cdk_web_proxy: 'paypalCdkProxy', cdk_sms_api_key: 'paypalCdkSmsApiKey' };
         const key = clearSetting.dataset.paypalClearSetting;
         const input = byId(mapping[key]);
         if (input) input.value = '';
@@ -1127,6 +1263,7 @@
     state.initialized = true;
     renderShell();
     loadSettings();
+    loadCdkPool({ silent: true });
     if (!mount.classList.contains('hidden')) loadPaypalProtocol({ silent: true });
     setInterval(updateCountdowns, 1000);
     setInterval(() => {

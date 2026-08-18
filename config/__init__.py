@@ -178,6 +178,31 @@ from config.oaics import (
     OAICS_INCLUDE_PROMO,
 )
 
+# ---------- 1K50 CDK 网页提链 / 协议支付 ----------
+from config.cdk_web import (
+    CDK_WEB_ENABLED,
+    CDK_WEB_BASE_URL,
+    CDK_WEB_WORKBENCH_PASSWORD,
+    CDK_WEB_REQUEST_TIMEOUT,
+    CDK_WEB_TASK_TIMEOUT,
+    CDK_WEB_POLL_INTERVAL,
+    CDK_WEB_PAYMENT_TIMEOUT,
+    CDK_WEB_PAYMENT_POLL_INTERVAL,
+    CDK_WEB_COUNTRY,
+    CDK_WEB_PROTOCOL_COUNTRY,
+    CDK_WEB_BUYER_MODE,
+    CDK_WEB_AUTO_PAYMENT,
+    CDK_WEB_AGREEMENT_ONLY,
+    CDK_WEB_PROXY,
+    CDK_WEB_SMS_MODE,
+    CDK_WEB_SMS_PROVIDER,
+    CDK_WEB_SMS_API_KEY,
+    CDK_WEB_SMS_COUNTRY,
+    CDK_WEB_MAX_RETRIES,
+    CDK_WEB_WORKERS,
+    CDK_WEB_QUEUE_LIMIT,
+)
+
 
 # ---------- 热加载支持 ----------
 # WebUI 改配置后调 reload_all() 即可让所有运行时代码看到新值，无需重启进程。
@@ -202,6 +227,7 @@ _RELOADABLE_SUBMODULES = (
     "config.codex",
     "config.extract_link",
     "config.paypal_payment",
+    "config.cdk_web",
     "config.sub2api",
     "config.humanize",
 )
@@ -233,9 +259,9 @@ def reload_all() -> list[str]:
 def _refresh_top_level_constants() -> None:
     """把刚 reload 的子模块的常量重新拷一份到 config 包顶层。"""
     import config as _self
-    from config import browser, openai_protocol, proxy as _proxy, register, email, twofa, oaics, roxybrowser, cloakbrowser, browser_use, skyvern, codex, extract_link, paypal_payment, sub2api, humanize, flow_trigger
+    from config import browser, openai_protocol, proxy as _proxy, register, email, twofa, oaics, roxybrowser, cloakbrowser, browser_use, skyvern, codex, extract_link, paypal_payment, cdk_web, sub2api, humanize, flow_trigger
     # 简单粗暴：枚举一遍重要常量，覆盖到 _self
-    for src in (browser, openai_protocol, _proxy, register, email, twofa, oaics, roxybrowser, cloakbrowser, browser_use, skyvern, codex, extract_link, paypal_payment, sub2api, humanize, flow_trigger):
+    for src in (browser, openai_protocol, _proxy, register, email, twofa, oaics, roxybrowser, cloakbrowser, browser_use, skyvern, codex, extract_link, paypal_payment, cdk_web, sub2api, humanize, flow_trigger):
         for k in dir(src):
             if k.isupper() or k in ("pick_proxy", "pick_browser_profile", "build_browser_environment", "validate_browser_profile"):
                 setattr(_self, k, getattr(src, k))
@@ -291,4 +317,13 @@ __all__ = [
     "OAICS_RETRY_DELAY", "OAICS_BILLING_COUNTRY", "OAICS_CURRENCY",
     "OAICS_EXPECTED_METHOD", "OAICS_PLAN_NAME", "OAICS_PROMO_CAMPAIGN",
     "OAICS_INCLUDE_PROMO",
+    # 1K50 CDK 网页
+    "CDK_WEB_ENABLED", "CDK_WEB_BASE_URL", "CDK_WEB_WORKBENCH_PASSWORD",
+    "CDK_WEB_REQUEST_TIMEOUT", "CDK_WEB_TASK_TIMEOUT", "CDK_WEB_POLL_INTERVAL",
+    "CDK_WEB_PAYMENT_TIMEOUT", "CDK_WEB_PAYMENT_POLL_INTERVAL",
+    "CDK_WEB_COUNTRY", "CDK_WEB_PROTOCOL_COUNTRY", "CDK_WEB_BUYER_MODE",
+    "CDK_WEB_AUTO_PAYMENT", "CDK_WEB_AGREEMENT_ONLY", "CDK_WEB_PROXY",
+    "CDK_WEB_SMS_MODE", "CDK_WEB_SMS_PROVIDER", "CDK_WEB_SMS_API_KEY",
+    "CDK_WEB_SMS_COUNTRY", "CDK_WEB_MAX_RETRIES", "CDK_WEB_WORKERS",
+    "CDK_WEB_QUEUE_LIMIT",
 ]

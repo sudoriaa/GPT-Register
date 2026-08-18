@@ -647,6 +647,55 @@ EDITABLE_FIELDS = [
         "key": "EXTRACT_LINK_WORKERS", "file": "extract_link.py", "type": "int", "group": "提链",
         "label": "提链并发数", "help": "批量提链后台线程数，建议 1-4",
     },
+    # ---- 1K50 CDK 网页 ----
+    {
+        "key": "CDK_WEB_ENABLED", "file": "cdk_web.py", "type": "bool", "group": "1K50 CDK",
+        "label": "启用 CDK 网页后端", "help": "开启后可选择 cdk_web 后端，自动从本地 CDK 池轮换提链和协议支付",
+    },
+    {
+        "key": "CDK_WEB_BASE_URL", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "CDK 网页地址", "help": "默认 https://www.1k50.xyz/pp-cdk-vak",
+    },
+    {
+        "key": "CDK_WEB_WORKBENCH_PASSWORD", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "工作台密码", "help": "网页要求密码时填写，只保存到 .env 且不回显", "storage": "env", "secret": True,
+    },
+    {
+        "key": "CDK_WEB_COUNTRY", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "提链账单国家", "help": "两位国家代码，例如 GB、US",
+    },
+    {
+        "key": "CDK_WEB_PROTOCOL_COUNTRY", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "协议支付国家", "help": "两位国家代码；留空时沿用账单国家",
+    },
+    {
+        "key": "CDK_WEB_AUTO_PAYMENT", "file": "cdk_web.py", "type": "bool", "group": "1K50 CDK",
+        "label": "CDK 提链后自动支付", "help": "由同一个 CDK visitor/session 继续执行网页协议支付",
+    },
+    {
+        "key": "CDK_WEB_PROXY", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "CDK 默认代理", "help": "本次覆盖 > 此处代理 > 注册代理", "storage": "env", "secret": True,
+    },
+    {
+        "key": "CDK_WEB_SMS_MODE", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "网页接码模式", "help": "默认 server-auto；也可使用外部网页支持的指定接码模式",
+    },
+    {
+        "key": "CDK_WEB_SMS_PROVIDER", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "网页接码平台", "help": "server-auto 模式可留空；也可填写 smsbower 等",
+    },
+    {
+        "key": "CDK_WEB_SMS_API_KEY", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "网页接码 API Key", "help": "可选，只保存到 .env 且不回显", "storage": "env", "secret": True,
+    },
+    {
+        "key": "CDK_WEB_SMS_COUNTRY", "file": "cdk_web.py", "type": "str", "group": "1K50 CDK",
+        "label": "网页接码国家", "help": "默认沿用协议国家",
+    },
+    {
+        "key": "CDK_WEB_MAX_RETRIES", "file": "cdk_web.py", "type": "int", "group": "1K50 CDK",
+        "label": "CDK 失败轮换次数", "help": "CDK 无效、耗尽或任务失败时换下一条重试；AT 失效立即结束",
+    },
     # ---- PayPal 协议支付 ----
     {
         "key": "PAYPAL_PAYMENT_AUTO", "file": "paypal_payment.py", "type": "bool", "group": "协议支付",

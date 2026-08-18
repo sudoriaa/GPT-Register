@@ -2,7 +2,8 @@
 """Plus 试用 PayPal 提链服务配置。"""
 from config.env_loader import apply_env_overrides
 
-# local=直接调用本机 OAI-PayPal-Extractor；remote=兼容旧提链 API。
+# local=直接调用本机 OAI-PayPal-Extractor；remote=兼容旧提链 API；
+# cdk_web=使用 1K50 pp-cdk-vak 网页和本地 CDK 池。
 EXTRACT_LINK_BACKEND: str = "local"
 
 # 自动提链：套餐查询确认 free + Plus 试用资格后自动入队。
@@ -27,7 +28,7 @@ EXTRACT_LINK_API_BASE: str = ""
 # 提链 CDK；创建任务和监听事件都需要。
 EXTRACT_LINK_CDK: str = ""
 
-# 提链类型。local 模式固定使用 paypal；remote 模式默认兼容旧 pix 服务。
+# 提链类型。local/cdk_web 模式固定使用 paypal；remote 模式默认兼容旧 pix 服务。
 EXTRACT_LINK_TYPE: str = "pix"
 
 # 后台提链并发与超时

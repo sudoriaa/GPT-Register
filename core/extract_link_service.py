@@ -60,8 +60,10 @@ def _bool_setting(name: str, default: bool = False) -> bool:
 
 def backend_name() -> str:
     value = str(_runtime_setting("EXTRACT_LINK_BACKEND", "local") or "local").strip().lower()
-    if value not in {"local", "remote"}:
-        raise ValueError("EXTRACT_LINK_BACKEND 仅支持 local / remote")
+    if value in {"cdk", "1k50", "web", "cdk-web"}:
+        value = "cdk_web"
+    if value not in {"local", "remote", "cdk_web"}:
+        raise ValueError("EXTRACT_LINK_BACKEND 仅支持 local / remote / cdk_web")
     return value
 
 
@@ -73,11 +75,11 @@ SUPPORTED_LINK_TYPES = {"paypal", "pix", "upi", "kakao_pay", "ideal"}
 
 
 def _link_type(value: str | None = None) -> str:
-    default = "paypal" if backend_name() == "local" else "pix"
+    default = "paypal" if backend_name() in {"local", "cdk_web"} else "pix"
     t = str(value or _runtime_setting("EXTRACT_LINK_TYPE", default) or default).strip().lower()
     if t not in SUPPORTED_LINK_TYPES:
         raise ValueError("提链类型无效，仅支持 paypal / pix / upi / kakao_pay / ideal")
-    if backend_name() == "local":
+    if backend_name() in {"local", "cdk_web"}:
         return "paypal"
     if t == "paypal":
         # The legacy CDK service has no PayPal payment-method type; retain
@@ -102,14 +104,24 @@ def _cdk(value: str | None = None) -> str:
 
 def public_settings() -> dict:
     """返回前端可展示的提链设置，绝不返回代理认证或 CDK。"""
-    return {
-        "backend": backend_name(),
+    backend = backend_name()
+    proxy_setting_name = "CDK_WEB_PROXY" if backend == "cdk_web" else "EXTRACT_LINK_PROXY"
+    result = {
+        "backend": backend,
         "auto_extract": auto_extract_enabled(),
-        "custom_proxy_configured": bool(str(_runtime_setting("EXTRACT_LINK_PROXY", "") or "").strip()),
+        "custom_proxy_configured": bool(str(_runtime_setting(proxy_setting_name, "") or "").strip()),
         "country": str(_runtime_setting("EXTRACT_LINK_COUNTRY", "GB") or "GB").strip().upper(),
         "payment_method": str(_runtime_setting("EXTRACT_LINK_PAYMENT_METHOD", "paypal") or "paypal").strip().lower(),
         "expiry_minutes": _int_setting("EXTRACT_LINK_EXPIRY_MINUTES", 60, 1, 24 * 60),
     }
+    if backend == "cdk_web":
+        try:
+            from core import cdk_web_service
+            result.update(cdk_web_service.public_settings())
+            result["backend"] = "cdk_web"
+        except Exception:
+            result.update({"cdk_web_enabled": False, "cdk_pool_total": 0, "cdk_pool_available": 0})
+    return result
 
 
 _WORKERS = _int_setting("EXTRACT_LINK_WORKERS", 3, 1, 16)
@@ -185,7 +197,8 @@ def resolve_extract_proxy(account_id: int, override: str | None = None) -> tuple
     override_value = _normalize_proxy(raw_override)
     if raw_override and not override_value:
         raise ValueError("本次提链代理格式无效")
-    raw_global = str(_runtime_setting("EXTRACT_LINK_PROXY", "") or "").strip()
+    global_name = "CDK_WEB_PROXY" if backend_name() == "cdk_web" else "EXTRACT_LINK_PROXY"
+    raw_global = str(_runtime_setting(global_name, "") or "").strip()
     global_value = _normalize_proxy(raw_global)
     if raw_global and not global_value:
         raise ValueError("全局提链代理格式无效")
@@ -379,6 +392,21 @@ def _run_local_extract(*, access_token: str, link_type: str, proxy: str) -> dict
 
 
 def query_cdk(*, cdk: str | None = None) -> dict:
+    if backend_name() == "cdk_web":
+        from core import cdk_pool
+        items = cdk_pool.get_pool().list_public()
+        if cdk:
+            # Never echo the supplied code.  Return the matching masked record
+            # when it is already in the local pool.
+            fp = cdk_pool.fingerprint(cdk)
+            match = next((item for item in items if item.get("fingerprint") == fp), None)
+            return {"backend": "cdk_web", "configured": bool(match), "cdk_required": True, "item": match}
+        return {
+            "backend": "cdk_web", "configured": bool(items), "cdk_required": True,
+            "remaining": None, "pool_total": len(items),
+            "pool_available": sum(1 for item in items if item.get("status") == "available"),
+            "items": items,
+        }
     if backend_name() == "local":
         return {"backend": "local", "configured": True, "cdk_required": False, "remaining": None}
     base = _api_base()
@@ -598,6 +626,20 @@ def _run_extract(
     try:
         if not db.mark_account_extract_running(account_id):
             return {"ok": False, "error": "账号已删除或提链状态已被重置"}
+        if backend_name() == "cdk_web":
+            # The 1K50 backend owns its own CDK rotation, stable visitor and
+            # optional protocol-payment continuation.  Keep this dispatch in
+            # the existing queue so plan-check and WebUI callers retain one
+            # API surface.
+            from core import cdk_web_backend
+            return cdk_web_backend.run_extract(
+                account_id=account_id,
+                email=email,
+                access_token=access_token,
+                trigger=trigger,
+                proxy=str(proxy or ""),
+                proxy_source=proxy_source,
+            )
         if backend_name() == "local":
             selected_proxy = str(proxy or "").strip()
             if not selected_proxy:
@@ -701,6 +743,15 @@ def enqueue_account_extract(
     cdk: str | None = None,
     proxy: str | None = None,
 ) -> dict:
+    if backend_name() == "cdk_web":
+        from core import cdk_web_backend
+        return cdk_web_backend.enqueue_extract(
+            account_id=account_id,
+            email=email,
+            access_token=access_token,
+            trigger=trigger,
+            proxy=proxy,
+        )
     if not _QUEUE_SLOTS.acquire(blocking=False):
         return {"accepted": False, "busy": False, "error": "提链队列已满"}
     try:

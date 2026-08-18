@@ -26,6 +26,8 @@ from core import (
     plan_check_service,
     extract_link_service,
     paypal_payment_service,
+    cdk_pool,
+    cdk_web_backend,
     codex_agent_service,
     live_check_service,
     subscription_service,
@@ -139,11 +141,13 @@ def _compact_account_for_list(row: dict) -> dict:
         "extract_link_status", "extract_link_ok", "extract_link_trigger", "extract_link_type",
         "extract_link_queued_at", "extract_link_started_at", "extract_link_completed_at",
         "extract_link_checked_at", "extract_link_job_id", "extract_link_proxy_source",
+        "extract_link_backend",
         "paypal_payment_status", "paypal_payment_ok", "paypal_payment_trigger",
         "paypal_payment_country", "paypal_payment_proxy_source", "paypal_payment_queued_at",
         "paypal_payment_started_at", "paypal_payment_completed_at", "paypal_payment_checked_at",
         "paypal_payment_attempt", "paypal_payment_max_attempts", "paypal_payment_settlement_status",
         "paypal_payment_action",
+        "paypal_payment_backend",
         # 只保留独立的取消套餐任务状态；账号列表不再展示订阅查询结果。
         "subscription_cancel_status", "subscription_cancel_error",
         "subscription_cancel_queued_at", "subscription_cancel_started_at",
@@ -510,6 +514,12 @@ def create_app(auth_code: str | None = None) -> Flask:
     recovered_codex_agents = db.recover_interrupted_codex_agents()
     if recovered_codex_agents:
         logger.warning("已恢复 %s 个因 WebUI 重启中断的 Codex Agent Token 状态", recovered_codex_agents)
+    try:
+        recovered_cdk_leases = cdk_pool.get_pool().recover_orphans()
+        if recovered_cdk_leases:
+            logger.warning("已回收 %s 个因 WebUI 重启遗留的 CDK 租约", recovered_cdk_leases)
+    except Exception:
+        logger.exception("恢复 CDK 租约失败")
 
     # ----------------------------------------------------------
     # 页面
@@ -1430,6 +1440,158 @@ def create_app(auth_code: str | None = None) -> Flask:
         plan = str(acc.get("current_plan_type") or acc.get("plan_type") or "").lower()
         return plan == "free" and bool(acc.get("plus_trial_eligible"))
 
+    @app.get("/api/paypal-protocol/cdk")
+    @app.get("/api/paypal-protocol/cdk/status")
+    def api_paypal_protocol_cdk_pool():
+        """CDK 池只返回脱敏值、剩余次数和租约状态。"""
+        pool = cdk_pool.get_pool()
+        items = pool.list_public()
+        counts: dict[str, int] = {}
+        for item in items:
+            value = str(item.get("status") or "available")
+            counts[value] = counts.get(value, 0) + 1
+        return jsonify({
+            "ok": True,
+            "items": items,
+            "total": len(items),
+            "available": counts.get("available", 0),
+            "counts": counts,
+            "settings": cdk_web_backend.public_settings(),
+            "queue": cdk_web_backend.queue_settings(),
+        })
+
+    @app.post("/api/paypal-protocol/cdk/import")
+    def api_paypal_protocol_cdk_import():
+        """导入多行 CDK。Body {codes: "一行一个"|[...], replace?}。"""
+        data = request.get_json(silent=True) or {}
+        values = data.get("codes", data.get("text", data.get("items", "")))
+        if not isinstance(values, (str, list, tuple)):
+            return jsonify({"ok": False, "error": "codes 必须是多行字符串或数组"}), 400
+        lines = values.splitlines() if isinstance(values, str) else list(values)
+        if len(lines) > 10000:
+            return jsonify({"ok": False, "error": "单次最多导入 10000 条 CDK"}), 400
+        if not any(str(item or "").strip() for item in lines):
+            return jsonify({"ok": False, "error": "没有可导入的 CDK"}), 400
+        replace = bool(data.get("replace")) or str(data.get("mode") or "").lower() == "replace"
+        result = cdk_pool.get_pool().import_codes(lines, replace=replace)
+        return jsonify({"ok": True, **result})
+
+    @app.post("/api/paypal-protocol/cdk/delete")
+    def api_paypal_protocol_cdk_delete():
+        data = request.get_json(silent=True) or {}
+        ids = data.get("ids") or data.get("cdk_ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "ids 必须是非空数组"}), 400
+        if len(ids) > 10000:
+            return jsonify({"ok": False, "error": "单次最多删除 10000 条 CDK"}), 400
+        return jsonify({"ok": True, **cdk_pool.get_pool().delete(ids)})
+
+    @app.post("/api/paypal-protocol/cdk/reset")
+    def api_paypal_protocol_cdk_reset():
+        data = request.get_json(silent=True) or {}
+        ids = data.get("ids", data.get("cdk_ids"))
+        if ids is not None and not isinstance(ids, list):
+            return jsonify({"ok": False, "error": "ids 必须是数组"}), 400
+        return jsonify({"ok": True, **cdk_pool.get_pool().reset(ids)})
+
+    def _enqueue_cdk_account(acc: dict, *, trigger: str, data: dict) -> dict:
+        if not _is_extract_eligible(acc):
+            return {"accepted": False, "busy": False, "error": "仅支持 free(可Plus试用) 账号提链"}
+        token = str(acc.get("access_token") or "").strip()
+        if not token:
+            return {"accepted": False, "busy": False, "error": "该账号没有 access_token"}
+        return cdk_web_backend.enqueue_extract(
+            account_id=int(acc.get("id")),
+            email=str(acc.get("email") or ""),
+            access_token=token,
+            trigger=trigger,
+            proxy=data.get("proxy") if "proxy" in data else None,
+        )
+
+    @app.post("/api/paypal-protocol/cdk/extract")
+    @app.post("/api/paypal-protocol/cdk/retry")
+    def api_paypal_protocol_cdk_extract():
+        data = request.get_json(silent=True) or {}
+        try:
+            acc = db.get_account(int(data.get("account_id") or data.get("id")))
+        except (TypeError, ValueError):
+            acc = None
+        if not acc:
+            return jsonify({"ok": False, "error": "账号不存在"}), 404
+        try:
+            queued = _enqueue_cdk_account(acc, trigger="cdk_manual", data=data)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
+        if queued.get("busy"):
+            return jsonify({"ok": False, **{k: v for k, v in queued.items() if k != "future"}}), 409
+        if not queued.get("accepted"):
+            return jsonify({"ok": False, **{k: v for k, v in queued.items() if k != "future"}}), 400
+        return jsonify({"ok": True, "started": True, **{k: v for k, v in queued.items() if k != "future"}}), 202
+
+    @app.post("/api/paypal-protocol/cdk/extract-bulk")
+    def api_paypal_protocol_cdk_extract_bulk():
+        data = request.get_json(silent=True) or {}
+        ids = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
+        if len(ids) > 500:
+            return jsonify({"ok": False, "error": "单次最多提链 500 个账号"}), 400
+        started, busy, failed, skipped, seen = [], [], [], [], set()
+        for raw in ids:
+            try:
+                account_id = int(raw)
+            except (TypeError, ValueError):
+                skipped.append({"id": raw, "reason": "ID 非法"})
+                continue
+            if account_id in seen:
+                continue
+            seen.add(account_id)
+            acc = db.get_account(account_id)
+            if not acc:
+                skipped.append({"id": account_id, "reason": "账号不存在"})
+                continue
+            try:
+                queued = _enqueue_cdk_account(acc, trigger="cdk_manual_bulk", data=data)
+            except Exception as exc:
+                queued = {"accepted": False, "busy": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+            item = {"id": account_id, "email": acc.get("email"), **{k: v for k, v in queued.items() if k != "future"}}
+            if queued.get("accepted"):
+                started.append(item)
+            elif queued.get("busy"):
+                busy.append(item)
+            else:
+                failed.append(item)
+        return jsonify({
+            "ok": True,
+            "started": started, "started_count": len(started),
+            "busy": busy, "busy_count": len(busy),
+            "failed": failed, "failed_count": len(failed),
+            "skipped": skipped, "skipped_count": len(skipped),
+        }), 202
+
+    @app.post("/api/paypal-protocol/cdk/intervention/<kind>")
+    @app.post("/api/paypal-protocol/cdk/otp")
+    @app.post("/api/paypal-protocol/cdk/captcha")
+    def api_paypal_protocol_cdk_intervention(kind: str = ""):
+        if not kind:
+            kind = request.path.rsplit("/", 1)[-1]
+        kind = str(kind or "").lower()
+        if kind not in {"otp", "captcha"}:
+            return jsonify({"ok": False, "error": "kind 仅支持 otp/captcha"}), 400
+        data = request.get_json(silent=True) or {}
+        try:
+            account_id = int(data.get("account_id") or data.get("id"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "account_id 无效"}), 400
+        value = str(data.get("value") or data.get("code") or "").strip()
+        if not value:
+            return jsonify({"ok": False, "error": "value 不能为空"}), 400
+        try:
+            result = cdk_web_backend.submit_intervention(account_id=account_id, value=value, kind=kind)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}), 400
+        return jsonify({"ok": True, "result": result})
+
     @app.post("/api/accounts/extract-link")
     @app.post("/api/paypal-protocol/extract")
     def api_account_extract_link():
@@ -1535,6 +1697,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         }), 202
 
     @app.post("/api/paypal-protocol/payment")
+    @app.post("/api/paypal-protocol/cdk/payment")
     @app.post("/api/accounts/paypal-payment")
     def api_account_paypal_payment():
         """为已提链成功账号启动一次 PayPal BA 协议支付。"""
@@ -1560,6 +1723,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         return jsonify({"ok": True, "started": True, **{k: v for k, v in queued.items() if k != "future"}}), 202
 
     @app.post("/api/paypal-protocol/payment-bulk")
+    @app.post("/api/paypal-protocol/cdk/payment-bulk")
     @app.post("/api/accounts/paypal-payment-bulk")
     def api_accounts_paypal_payment_bulk():
         """批量启动协议支付；只处理提链成功且链接未过期的账号。"""
@@ -1752,9 +1916,10 @@ def create_app(auth_code: str | None = None) -> Flask:
             "settings": {
                 **extract_link_service.public_settings(),
                 **paypal_payment_service.public_settings(),
+                **cdk_web_backend.public_settings(),
             },
             "payment_settings": paypal_payment_service.public_settings(),
-            "queue": {"extract": extract_link_service.queue_settings(), "payment": paypal_payment_service.queue_settings()},
+            "queue": {"extract": extract_link_service.queue_settings(), "payment": paypal_payment_service.queue_settings(), "cdk_web": cdk_web_backend.queue_settings()},
         })
         return jsonify(snapshot)
 
@@ -1766,9 +1931,10 @@ def create_app(auth_code: str | None = None) -> Flask:
             "settings": {
                 **extract_link_service.public_settings(),
                 **paypal_payment_service.public_settings(),
+                **cdk_web_backend.public_settings(),
             },
             "payment_settings": paypal_payment_service.public_settings(),
-            "queue": {"extract": extract_link_service.queue_settings(), "payment": paypal_payment_service.queue_settings()},
+            "queue": {"extract": extract_link_service.queue_settings(), "payment": paypal_payment_service.queue_settings(), "cdk_web": cdk_web_backend.queue_settings()},
         })
 
     @app.post("/api/paypal-protocol/settings")
@@ -1795,6 +1961,9 @@ def create_app(auth_code: str | None = None) -> Flask:
             "auto_payment": "PAYPAL_PAYMENT_AUTO",
             "payment_auto": "PAYPAL_PAYMENT_AUTO",
             "service_autostart": "PAYPAL_PAYMENT_AUTOSTART_SERVICE",
+            "cdk_web_enabled": "CDK_WEB_ENABLED",
+            "cdk_enabled": "CDK_WEB_ENABLED",
+            "cdk_auto_payment": "CDK_WEB_AUTO_PAYMENT",
         }
         for source_key, target_key in bool_fields.items():
             if source_key not in data:
@@ -1805,7 +1974,21 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not isinstance(value, bool):
                 return jsonify({"ok": False, "error": f"{source_key} 必须是布尔值"}), 400
             updates[target_key] = value
+        if "cdk_web_enabled" in data or "cdk_enabled" in data:
+            cdk_value = data.get("cdk_web_enabled", data.get("cdk_enabled"))
+            if isinstance(cdk_value, str):
+                cdk_value = cdk_value.strip().lower() in {"1", "true", "yes", "on", "y"}
+            if cdk_value is True and "extract_backend" not in data and "backend" not in data:
+                updates["EXTRACT_LINK_BACKEND"] = "cdk_web"
+            elif cdk_value is False and "extract_backend" not in data and "backend" not in data:
+                try:
+                    if extract_link_service.backend_name() == "cdk_web":
+                        updates["EXTRACT_LINK_BACKEND"] = "local"
+                except Exception:
+                    pass
         string_fields = {
+            "extract_backend": "EXTRACT_LINK_BACKEND",
+            "backend": "EXTRACT_LINK_BACKEND",
             "payment_country": "PAYPAL_PAYMENT_COUNTRY",
             "payment_proxy": "PAYPAL_PAYMENT_PROXY",
             "default_payment_proxy": "PAYPAL_PAYMENT_PROXY",
@@ -1815,6 +1998,15 @@ def create_app(auth_code: str | None = None) -> Flask:
             "sms_provider_ids": "PAYPAL_PAYMENT_SMS_PROVIDER_IDS",
             "sms_api_base": "PAYPAL_PAYMENT_SMS_API_BASE",
             "sms_api_key": "PAYPAL_PAYMENT_SMS_API_KEY",
+            "cdk_web_base_url": "CDK_WEB_BASE_URL",
+            "cdk_workbench_password": "CDK_WEB_WORKBENCH_PASSWORD",
+            "cdk_web_proxy": "CDK_WEB_PROXY",
+            "cdk_country": "CDK_WEB_COUNTRY",
+            "cdk_protocol_country": "CDK_WEB_PROTOCOL_COUNTRY",
+            "cdk_sms_mode": "CDK_WEB_SMS_MODE",
+            "cdk_sms_provider": "CDK_WEB_SMS_PROVIDER",
+            "cdk_sms_api_key": "CDK_WEB_SMS_API_KEY",
+            "cdk_sms_country": "CDK_WEB_SMS_COUNTRY",
         }
         for source_key, target_key in string_fields.items():
             if source_key not in data:
@@ -1833,9 +2025,27 @@ def create_app(auth_code: str | None = None) -> Flask:
             if not re.fullmatch(r"[A-Z]{2}", candidate_country):
                 return jsonify({"ok": False, "error": "payment_country 必须是两位国家代码"}), 400
             updates["PAYPAL_PAYMENT_COUNTRY"] = candidate_country
+        for source_key in ("cdk_country", "cdk_protocol_country"):
+            if source_key not in data:
+                continue
+            candidate = str(data.get(source_key) or "").strip().upper()
+            if not candidate and source_key == "cdk_protocol_country":
+                updates["CDK_WEB_PROTOCOL_COUNTRY"] = ""
+                continue
+            if not re.fullmatch(r"[A-Z]{2}", candidate):
+                return jsonify({"ok": False, "error": f"{source_key} 必须是两位国家代码"}), 400
+            updates["CDK_WEB_COUNTRY" if source_key == "cdk_country" else "CDK_WEB_PROTOCOL_COUNTRY"] = candidate
+        if "extract_backend" in data or "backend" in data:
+            candidate_backend = str(data.get("extract_backend", data.get("backend", "")) or "").strip().lower()
+            if candidate_backend in {"cdk", "1k50", "web", "cdk-web"}:
+                candidate_backend = "cdk_web"
+            if candidate_backend not in {"local", "remote", "cdk_web"}:
+                return jsonify({"ok": False, "error": "extract_backend 仅支持 local / remote / cdk_web"}), 400
+            updates["EXTRACT_LINK_BACKEND"] = candidate_backend
         int_fields = {
             "sms_timeout": ("PAYPAL_PAYMENT_SMS_TIMEOUT", 20, 3600),
             "payment_retries": ("PAYPAL_PAYMENT_MAX_RETRIES", 0, 20),
+            "cdk_retries": ("CDK_WEB_MAX_RETRIES", 0, 20),
         }
         for source_key, (target_key, lower, upper) in int_fields.items():
             if source_key not in data:
@@ -1862,6 +2072,7 @@ def create_app(auth_code: str | None = None) -> Flask:
             "settings": {
                 **extract_link_service.public_settings(),
                 **paypal_payment_service.public_settings(),
+                **cdk_web_backend.public_settings(),
             },
             "payment_settings": paypal_payment_service.public_settings(),
         })

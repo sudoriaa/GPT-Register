@@ -583,6 +583,16 @@ def enqueue_account_payment(
     account = db.get_account(int(account_id)) or {}
     if not account:
         return {"accepted": False, "busy": False, "error": "账号不存在"}
+    # CDK 网页记录必须沿用同一条 1K50 task/visitor 链路；不要把它
+    # 误送入本地 paypal-agreement-protocol 服务，避免重复创建协议任务。
+    if str(account.get("extract_link_backend") or "").strip().lower() == "cdk_web":
+        from core import cdk_web_backend
+        return cdk_web_backend.enqueue_payment(
+            account_id=int(account_id),
+            trigger=trigger,
+            proxy=proxy,
+            country=country,
+        )
     if str(account.get("extract_link_status") or "").strip().lower() != "success":
         return {"accepted": False, "busy": False, "error": "账号尚未提链成功"}
     if not db.account_extract_link_is_fresh(int(account_id)):

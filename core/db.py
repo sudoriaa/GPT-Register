@@ -1787,7 +1787,12 @@ def update_account_plus_mail(acc_id: int | None = None, email: str | None = None
         return True
 
 
-def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str = "pix") -> bool:
+def claim_account_extract(
+    acc_id: int,
+    trigger: str = "manual",
+    link_type: str = "pix",
+    backend: str | None = None,
+) -> bool:
     """原子占用账号提链任务；已有未超时任务时返回 False。"""
     with _LOCK:
         accounts = _load_accounts()
@@ -1809,6 +1814,7 @@ def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str =
         row["extract_link_ok"] = False
         row["extract_link_trigger"] = str(trigger or "manual")
         row["extract_link_type"] = str(link_type or "pix").lower()
+        row["extract_link_backend"] = str(backend).strip().lower() if backend is not None else None
         row["extract_link_queued_at"] = now
         row["extract_link_started_at"] = None
         row["extract_link_completed_at"] = None
@@ -1826,6 +1832,7 @@ def claim_account_extract(acc_id: int, trigger: str = "manual", link_type: str =
             "extract_link_payment_link_type",
             "extract_link_expires_at",
             "extract_link_result_json",
+            "extract_link_cdk_visitor",
         ):
             row[key] = None
         row["updated_at"] = now
@@ -1871,6 +1878,10 @@ def update_account_extract(acc_id: int, result: dict | None = None) -> bool:
             row["extract_link_job_id"] = result.get("job_id")
         if result.get("link_type") is not None:
             row["extract_link_type"] = result.get("link_type")
+        if result.get("backend") is not None:
+            row["extract_link_backend"] = str(result.get("backend") or "").strip().lower() or None
+        if result.get("visitor_id") is not None:
+            row["extract_link_cdk_visitor"] = str(result.get("visitor_id") or "")[:128] or None
         if result.get("cdk_remaining") is not None:
             row["extract_link_cdk_remaining"] = result.get("cdk_remaining")
         if result.get("proxy_source") is not None:
@@ -1960,6 +1971,12 @@ def claim_account_paypal_payment(
             "paypal_payment_result_json",
         ):
             row[key] = None
+        # A fresh extraction invalidates the previous BA/payment result.  This
+        # keeps the three Paypal协议 buckets aligned with the newest link and
+        # prevents an old paid record from being shown while a new task runs.
+        for key in list(row):
+            if key.startswith("paypal_payment_"):
+                row[key] = None
         row["updated_at"] = now
         _save_accounts(accounts)
         return True
@@ -2023,6 +2040,7 @@ def update_account_paypal_payment(acc_id: int, result: dict | None = None) -> bo
             "phone_last4": "paypal_payment_phone_last4",
             "activation_fingerprint": "paypal_payment_activation_fingerprint",
             "proxy_source": "paypal_payment_proxy_source",
+            "backend": "paypal_payment_backend",
         }
         for source_key, target_key in direct_fields.items():
             if source_key in result and result.get(source_key) is not None:
@@ -2231,6 +2249,7 @@ def list_paypal_protocol_links(
                 "extract_link_payment_link_type": row.get("extract_link_payment_link_type"),
                 "extract_link_expires_at": expires_at or None,
                 "extract_link_proxy_source": row.get("extract_link_proxy_source"),
+                "extract_link_backend": row.get("extract_link_backend"),
                 "expired": expired,
                 "remaining_seconds": remaining_seconds,
                 "has_registration_proxy": bool(row.get("registration_proxy") or row.get("proxy_used")),
@@ -2258,6 +2277,7 @@ def list_paypal_protocol_links(
                 "paypal_payment_settlement_status": row.get("paypal_payment_settlement_status"),
                 "paypal_payment_redirect_status": row.get("paypal_payment_redirect_status"),
                 "paypal_payment_action": row.get("paypal_payment_action"),
+                "paypal_payment_backend": row.get("paypal_payment_backend"),
                 "paypal_payment_phone_country": row.get("paypal_payment_phone_country"),
             }
             error = _scrub_extract_public_text(row.get("extract_link_error"), row)
