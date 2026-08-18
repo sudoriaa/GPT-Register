@@ -399,7 +399,7 @@ def _parse_mailyou_url(code_url: str) -> tuple[str, str] | None:
             return None
         query = {
             str(key or "").lower(): value
-            for key, value in parse_qsl(parsed.query or "", keep_blank_values=True)
+            for key, value in _mailyou_query_pairs(parsed.query or "")
         }
         addr = str(query.get("addr") or query.get("email") or query.get("mail") or "").strip()
         if not addr:
@@ -417,7 +417,7 @@ def _mailyou_request_url(code_url: str, email: str = "") -> str | None:
         return None
     try:
         parsed = urlparse(str(code_url or "").strip())
-        pairs = parse_qsl(parsed.query or "", keep_blank_values=True)
+        pairs = _mailyou_query_pairs(parsed.query or "")
         target_email = str(email or "").strip()
         placeholder_re = re.compile(r"^(?:\{+\s*email\s*\}+|\$email|:email)$", re.IGNORECASE)
         replaced = False
@@ -440,6 +440,21 @@ def _mailyou_request_url(code_url: str, email: str = "") -> str | None:
         return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/getMail", "", urlencode(output), ""))
     except Exception:
         return None
+
+
+def _mailyou_query_pairs(query: str) -> list[tuple[str, str]]:
+    """解析 mailyou 查询参数，并保留未编码地址中的 ``+``。"""
+    pairs: list[tuple[str, str]] = []
+    for segment in str(query or "").split("&"):
+        if not segment:
+            continue
+        raw_key, separator, raw_value = segment.partition("=")
+        # ``unquote`` 不会把加号转换为空格，适合 plus-address 邮箱；其它
+        # 通用 API 仍继续使用 parse_qsl 的标准表单语义。
+        key = unquote(raw_key.replace("+", " "))
+        value = unquote(raw_value if separator else "")
+        pairs.append((key, value))
+    return pairs
 
 
 def _fetch_mailyou_otp(
@@ -467,14 +482,24 @@ def _fetch_mailyou_otp(
     except Exception as exc:
         logger.debug("[GenericAPI] mailyou 读取失败: %s: %s", type(exc).__name__, exc)
         return None
-    structured = _extract_structured_api_code(body, after_ts=after_ts)
-    if structured:
-        code, meta = structured
-        meta = {**meta, "source": "mailyou_getMail_json"}
-        return code, meta
+    # JSON 响应必须在结构化解析后结束；如果 after_ts 判定它是旧码，不能再
+    # 把同一份 JSON 拉平为文本重新捞回旧验证码。
+    try:
+        json_body = json.loads(body)
+    except Exception:
+        json_body = None
+    if json_body is not None:
+        structured = _extract_structured_api_code(body, after_ts=after_ts)
+        if structured:
+            code, meta = structured
+            meta = {**meta, "source": "mailyou_getMail_json"}
+            return code, meta
+        return None
+
     # 页面本身包含 Worker 的导航/样式，先压成正文，避免 CSS 色值或脚本里的
-    # 数字被误识别为验证码；如果页面不是标准 HTML，再回退到原始响应文本。
-    code = _extract_code(_html_to_plain_text(body)) or _extract_code(body)
+    # 数字被误识别为验证码。仅对明确的纯文本响应使用原文兜底。
+    is_html = bool(re.search(r"<\s*(?:!doctype|html|head|body|table|div|p|style|script)\b", body, flags=re.IGNORECASE))
+    code = _extract_code(_html_to_plain_text(body)) if is_html else _extract_code(body)
     if not code:
         return None
     title_m = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
